@@ -33,6 +33,10 @@ namespace
 		bool  onHeadshot = true;
 		bool  onOneShot = true;
 		std::vector<int> headBones = { 0x4B5 }; // BONE_HEAD
+		float bodyKillChance = 5.0f;   // % chance that an ordinary firearm kill (no headshot, not one shot) also gets a killcam
+		bool  vehicleKills = true;     // allow killcams for NPCs in cars/bikes (always from the front)
+		float vehDistMin = 4.0f, vehDistMax = 6.5f;   // meters ahead of the vehicle
+		float vehHeightMin = 0.8f, vehHeightMax = 2.0f; // camera height above the vehicle position
 		// Shot variation (picked at random for every killcam)
 		bool  varyTimeScale = true;
 		float timeScaleMin = 0.10f, timeScaleMax = 0.40f;
@@ -110,6 +114,12 @@ namespace
 		cfg.timeScale = IniFloat("TimeScale", cfg.timeScale);
 		cfg.onHeadshot = IniBool("TriggerOnHeadshot", cfg.onHeadshot);
 		cfg.onOneShot = IniBool("TriggerOnOneShot", cfg.onOneShot);
+		cfg.bodyKillChance = IniFloat("BodyKillChancePercent", cfg.bodyKillChance);
+		cfg.vehicleKills = IniBool("VehicleKills", cfg.vehicleKills);
+		cfg.vehDistMin = IniFloat("VehicleDistMin", cfg.vehDistMin);
+		cfg.vehDistMax = IniFloat("VehicleDistMax", cfg.vehDistMax);
+		cfg.vehHeightMin = IniFloat("VehicleHeightMin", cfg.vehHeightMin);
+		cfg.vehHeightMax = IniFloat("VehicleHeightMax", cfg.vehHeightMax);
 		cfg.varyTimeScale = IniBool("VaryTimeScale", cfg.varyTimeScale);
 		cfg.timeScaleMin = IniFloat("TimeScaleMin", cfg.timeScaleMin);
 		cfg.timeScaleMax = IniFloat("TimeScaleMax", cfg.timeScaleMax);
@@ -180,6 +190,11 @@ namespace
 		if (cfg.durationSec < 0.1f) cfg.durationSec = 0.1f;
 		if (cfg.timeScale < 0.05f) cfg.timeScale = 0.05f;
 		if (cfg.timeScale > 1.0f) cfg.timeScale = 1.0f;
+		if (cfg.bodyKillChance < 0.0f) cfg.bodyKillChance = 0.0f;
+		if (cfg.bodyKillChance > 100.0f) cfg.bodyKillChance = 100.0f;
+		if (cfg.vehDistMin < 1.5f) cfg.vehDistMin = 1.5f;
+		if (cfg.vehDistMax < cfg.vehDistMin) cfg.vehDistMax = cfg.vehDistMin;
+		if (cfg.vehHeightMax < cfg.vehHeightMin) cfg.vehHeightMax = cfg.vehHeightMin;
 		if (cfg.timeScaleMin < 0.05f) cfg.timeScaleMin = 0.05f;
 		if (cfg.timeScaleMax < cfg.timeScaleMin) cfg.timeScaleMax = cfg.timeScaleMin;
 		if (cfg.timeScaleMax > 1.0f) cfg.timeScaleMax = 1.0f;
@@ -403,6 +418,12 @@ namespace
 		N_IS_PAUSE_MENU_ACTIVE = 0x6C4568A7,
 		N_GET_GROUND_Z_FOR_3D_COORD = 0x6D902EE3,
 		N_SET_CHAR_ALL_ANIMS_SPEED = 0x5BDB7E2C,
+		N_GET_CAR_CHAR_IS_USING = 0x1B067237,
+		N_GET_CAR_COORDINATES = 0x2D432EAB,
+		N_GET_CAR_FORWARD_X = 0x47A21100,
+		N_GET_CAR_FORWARD_Y = 0x3BDB4496,
+		N_DOES_VEHICLE_EXIST = 0x67A42263,
+		N_DOES_CHAR_EXIST = 0x46531797,
 		N_SET_TEXT_SCALE = 0x02C069E5,
 		N_SET_TEXT_COLOUR = 0x19C967B5,
 		N_SET_TEXT_FONT = 0x75363BB5,
@@ -527,6 +548,11 @@ namespace
 		float  orbit = 0.0f;        // rad/s, signed; 0 = fixed
 		float  dolly = 0.0f;        // fraction of baseRadius added over the shot (negative = push in)
 		Vec3   victim = {};
+		// Vehicle shot: camera stays in front of the vehicle and follows it.
+		bool   follow = false;
+		int    car = 0, ped = 0;
+		float  fwdX = 0, fwdY = 1;  // smoothed forward direction of the vehicle
+		float  dist = 5.0f;
 	} active;
 	double lastTrigger = -1e9;
 
@@ -544,7 +570,7 @@ namespace
 		Native(N_SET_CAM_ACTIVE, active.cam, false);
 		Native(N_DESTROY_CAM, active.cam);
 		Native(N_SET_TIME_SCALE, 1.0f);
-		active.on = false;
+		active.on = false; active.follow = false;
 		Log("killcam end (%s), %.2fs real", why, NowSec() - active.startTime);
 	}
 
@@ -595,6 +621,94 @@ namespace
 		return false;
 	}
 
+	bool BeginCam(const Vec3& p, const Vec3& target, float ts)
+	{
+		int cam = 0;
+		Native(N_CREATE_CAM, 14, &cam);
+		if (!cam) { Log("skipped: CREATE_CAM returned 0"); return false; }
+		active.cam = cam;
+		Native(N_SET_CAM_POS, cam, p.x, p.y, p.z);
+		Native(N_POINT_CAM_AT_COORD, cam, target.x, target.y, target.z);
+		Native(N_SET_CAM_FOV, cam, cfg.fov);
+		Native(N_SET_CAM_ACTIVE, cam, true);
+		Native(N_SET_CAM_PROPAGATE, cam, true);
+		Native(N_ACTIVATE_SCRIPTED_CAMS, true, true);
+		Native(N_SET_TIME_SCALE, ts);
+		active.on = true;
+		active.startTime = active.lastTick = NowSec();
+		return true;
+	}
+
+	bool VehicleForward(int car, float& fx, float& fy)
+	{
+		Native(N_GET_CAR_FORWARD_X, car, &fx);
+		Native(N_GET_CAR_FORWARD_Y, car, &fy);
+		float l = sqrtf(fx * fx + fy * fy);
+		if (l < 0.1f) return false;
+		fx /= l; fy /= l;
+		return true;
+	}
+
+	// Camera in front of the vehicle, looking back at the victim. Never uses other angles.
+	bool StartVehicleKillCam(int ped, int car, const Vec3& v)
+	{
+		Vec3 cp;
+		Native(N_GET_CAR_COORDINATES, car, &cp.x, &cp.y, &cp.z);
+		float fx = 0, fy = 0;
+		if (!VehicleForward(car, fx, fy)) { Log("skipped: vehicle forward vector invalid"); return false; }
+
+		active.victim = v;
+		active.height = RandRange(cfg.vehHeightMin, cfg.vehHeightMax);
+		active.targetH = 0.3f;
+		const Vec3 target = { v.x, v.y, v.z + active.targetH };
+		const float d0 = RandRange(cfg.vehDistMin, cfg.vehDistMax);
+		float dist = 0;
+		Vec3 p = {};
+		for (float k : { 1.0f, 0.75f, 0.55f })
+		{
+			Vec3 c = { cp.x + fx * d0 * k, cp.y + fy * d0 * k, cp.z + active.height };
+			if (CameraSpotOk(c, target)) { p = c; dist = d0 * k; break; }
+		}
+		if (dist == 0) { Log("skipped: no clear spot in front of the vehicle"); return false; }
+
+		const float ts = cfg.varyTimeScale ? RandRange(cfg.timeScaleMin, cfg.timeScaleMax) : cfg.timeScale;
+		if (!BeginCam(p, target, ts)) return false;
+		active.follow = true; active.car = car; active.ped = ped;
+		active.fwdX = fx; active.fwdY = fy; active.dist = dist;
+		active.orbit = 0; active.dolly = 0;
+		Log("killcam start: vehicle-front timescale %.2f height %.1f dist %.1f victim (%.1f %.1f %.1f)", ts, active.height, dist, v.x, v.y, v.z);
+		return true;
+	}
+
+	void UpdateVehicleCam(float dt)
+	{
+		if (!NBool(Native(N_DOES_VEHICLE_EXIST, active.car))) return; // keep the last position
+		Vec3 cp;
+		Native(N_GET_CAR_COORDINATES, active.car, &cp.x, &cp.y, &cp.z);
+		float fx = 0, fy = 0;
+		if (VehicleForward(active.car, fx, fy))
+		{
+			float k = fminf(1.0f, dt * 6.0f); // smooth the heading so spins don't whip the camera
+			active.fwdX += (fx - active.fwdX) * k;
+			active.fwdY += (fy - active.fwdY) * k;
+			float l = sqrtf(active.fwdX * active.fwdX + active.fwdY * active.fwdY);
+			if (l > 0.05f) { active.fwdX /= l; active.fwdY /= l; }
+		}
+		Vec3 t = cp;
+		if (NBool(Native(N_DOES_CHAR_EXIST, active.ped))) Native(N_GET_CHAR_COORDINATES, active.ped, &t.x, &t.y, &t.z);
+		t.z += active.targetH;
+		for (float k : { 1.0f, 0.7f, 0.5f })
+		{
+			Vec3 c = { cp.x + active.fwdX * active.dist * k, cp.y + active.fwdY * active.dist * k, cp.z + active.height };
+			if (CameraSpotOk(c, t))
+			{
+				Native(N_SET_CAM_POS, active.cam, c.x, c.y, c.z);
+				break;
+			}
+		}
+		Native(N_POINT_CAM_AT_COORD, active.cam, t.x, t.y, t.z);
+	}
+
 	bool StartKillCam(const Vec3& v)
 	{
 		active.victim = v;
@@ -638,20 +752,9 @@ namespace
 		const Vec3 target = { v.x, v.y, v.z + active.targetH };
 		const float ts = cfg.varyTimeScale ? RandRange(cfg.timeScaleMin, cfg.timeScaleMax) : cfg.timeScale;
 
-		int cam = 0;
-		Native(N_CREATE_CAM, 14, &cam);
-		if (!cam) { Log("skipped: CREATE_CAM returned 0"); return false; }
-		active.cam = cam;
-		Native(N_SET_CAM_POS, cam, p.x, p.y, p.z);
-		Native(N_POINT_CAM_AT_COORD, cam, target.x, target.y, target.z);
-		Native(N_SET_CAM_FOV, cam, cfg.fov);
-		Native(N_SET_CAM_ACTIVE, cam, true);
-		Native(N_SET_CAM_PROPAGATE, cam, true);
-		Native(N_ACTIVATE_SCRIPTED_CAMS, true, true);
-		Native(N_SET_TIME_SCALE, ts);
+		if (!BeginCam(p, target, ts)) return false;
+		active.follow = false;
 
-		active.on = true;
-		active.startTime = active.lastTick = NowSec();
 		Log("killcam start: %s/%s timescale %.2f height %.1f radius %.1f orbit %.0fdeg/s dolly %+.2f victim (%.1f %.1f %.1f)",
 			moveName[move], angleName[angle], ts, active.height, fr, active.orbit * 57.29578f, active.dolly, v.x, v.y, v.z);
 		return true;
@@ -664,7 +767,14 @@ namespace
 		if (IsDead(player)) { StopKillCam("player dead"); return; }
 		if (NBool(Native(N_IS_PAUSE_MENU_ACTIVE))) { StopKillCam("pause menu"); return; }
 
-		if (active.orbit != 0.0f || active.dolly != 0.0f)
+		if (active.follow)
+		{
+			double fdt = now - active.lastTick;
+			if (fdt > 0.1) fdt = 0.1;
+			active.lastTick = now;
+			UpdateVehicleCam((float)fdt);
+		}
+		else if (active.orbit != 0.0f || active.dolly != 0.0f)
 		{
 			double dt = now - active.lastTick;
 			if (dt > 0.1) dt = 0.1;
@@ -695,8 +805,9 @@ namespace
 	{
 		if (!NBool(Native(N_HAS_CHAR_BEEN_DAMAGED_BY_CHAR, ped, player, false))) return;
 
-		if (NBool(Native(N_IS_CHAR_IN_ANY_CAR, ped)) || NBool(Native(N_IS_CHAR_ON_ANY_BIKE, ped)) ||
-			NBool(Native(N_IS_CHAR_IN_ANY_BOAT, ped)) || NBool(Native(N_IS_CHAR_IN_ANY_HELI, ped))) return;
+		if (NBool(Native(N_IS_CHAR_IN_ANY_BOAT, ped)) || NBool(Native(N_IS_CHAR_IN_ANY_HELI, ped))) return;
+		const bool inVehicle = NBool(Native(N_IS_CHAR_IN_ANY_CAR, ped)) || NBool(Native(N_IS_CHAR_ON_ANY_BIKE, ped));
+		if (inVehicle && !cfg.vehicleKills) return;
 
 		int bone = -1;
 		bool haveBone = NBool(Native(N_GET_CHAR_LAST_DAMAGE_BONE, ped, &bone));
@@ -706,10 +817,14 @@ namespace
 		Native(N_GET_CURRENT_CHAR_WEAPON, player, &weapon);
 		bool oneShot = st.lastHealth >= st.baseHealth && IsFirearm(weapon);
 
-		Log("player kill: ped %d bone %d(0x%X) weapon %d health %d/%d -> headshot=%d oneShot=%d",
-			ped, bone, bone, weapon, st.lastHealth, st.baseHealth, (int)headshot, (int)oneShot);
+		bool qualifies = (cfg.onHeadshot && headshot) || (cfg.onOneShot && oneShot);
+		bool bodyRoll = false;
+		if (!qualifies && IsFirearm(weapon) && Rand01() * 100.0f < cfg.bodyKillChance) { qualifies = true; bodyRoll = true; }
 
-		if (!((cfg.onHeadshot && headshot) || (cfg.onOneShot && oneShot))) return;
+		Log("player kill: ped %d bone %d(0x%X) weapon %d health %d/%d inVehicle=%d -> headshot=%d oneShot=%d bodyRoll=%d",
+			ped, bone, bone, weapon, st.lastHealth, st.baseHealth, (int)inVehicle, (int)headshot, (int)oneShot, (int)bodyRoll);
+
+		if (!qualifies) return;
 
 		const double now = NowSec();
 		if (active.on) { Log("skipped: killcam already active"); return; }
@@ -722,7 +837,16 @@ namespace
 		float dx = v.x - p.x, dy = v.y - p.y, dz = v.z - p.z;
 		if (sqrtf(dx * dx + dy * dy + dz * dz) > cfg.maxVictimDist) { Log("skipped: victim too far"); return; }
 
-		if (StartKillCam(v)) lastTrigger = now;
+		bool started;
+		if (inVehicle)
+		{
+			int car = 0;
+			Native(N_GET_CAR_CHAR_IS_USING, ped, &car);
+			if (!car) { Log("skipped: victim in vehicle but GET_CAR_CHAR_IS_USING gave 0"); return; }
+			started = StartVehicleKillCam(ped, car, v);
+		}
+		else started = StartKillCam(v);
+		if (started) lastTrigger = now;
 	}
 
 	// ---------------------------------------------------------------- dead eye

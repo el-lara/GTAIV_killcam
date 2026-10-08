@@ -33,6 +33,10 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
 - Kill = ped dead, `HAS_CHAR_BEEN_DAMAGED_BY_CHAR(ped, player)`, victim not in car/bike/boat/heli.
 - Headshot = `GET_CHAR_LAST_DAMAGE_BONE` in `HeadBoneIds` (default 0x4B5 = 1205).
 - One shot = victim's health never dropped before the lethal frame and the player held a firearm.
+- `BodyKillChancePercent` (default 5): an ordinary firearm kill can also trigger.
+- NPCs in cars/bikes qualify too (`VehicleKills`): camera always in front of the vehicle, looking back at the
+  victim and following the vehicle (heading is smoothed). No other angles; if the front spot is blocked, skipped.
+  Not tested in-game: whether `GET_CAR_CHAR_IS_USING` works for a dead ped is unverified (the log says if not).
 - Needs (headshot or one shot) + not on cooldown + chance roll + victim within range.
 - Each killcam picks a random shot: movement (fixed 60 / orbit 30 / dolly 10, random orbit
   direction and speed) x angle (eye level / high angle / low angle looking up) and a random
