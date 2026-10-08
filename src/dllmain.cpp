@@ -37,6 +37,10 @@ namespace
 		float explosionKillChance = 4.0f; // % chance that an explosion kill gets a (wide, distant) killcam
 		float expDistMin = 7.0f, expDistMax = 12.0f;
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
+		bool  lockAim = true;          // freeze the gameplay camera (aim) while the killcam plays
+		std::vector<int> sniperIds = { 16, 17 }; // SNIPERRIFLE, M40A1
+		float sniperChance = 25.0f;    // % chance for kills made with a sniper weapon (replaces ChancePercent)
+		float sniperMaxDist = 250.0f;  // max victim distance for sniper kills
 		bool  vehicleKills = true;     // allow killcams for NPCs in cars/bikes (always from the front)
 		float vehDistMin = 4.0f, vehDistMax = 6.5f;   // meters ahead of the vehicle
 		float vehHeightMin = 0.8f, vehHeightMax = 2.0f; // camera height above the vehicle position
@@ -119,6 +123,16 @@ namespace
 		cfg.onOneShot = IniBool("TriggerOnOneShot", cfg.onOneShot);
 		cfg.bodyKillChance = IniFloat("BodyKillChancePercent", cfg.bodyKillChance);
 		cfg.vehicleKills = IniBool("VehicleKills", cfg.vehicleKills);
+		cfg.lockAim = IniBool("LockAimDuringKillcam", cfg.lockAim);
+		cfg.sniperChance = IniFloat("SniperChancePercent", cfg.sniperChance);
+		cfg.sniperMaxDist = IniFloat("SniperMaxDistance", cfg.sniperMaxDist);
+		{
+			char sb[128];
+			GetPrivateProfileStringA("KillCam", "SniperWeaponIds", "16,17", sb, sizeof(sb), iniPath);
+			std::vector<int> ids;
+			for (char* tok = strtok(sb, ", "); tok; tok = strtok(nullptr, ", ")) ids.push_back((int)strtol(tok, nullptr, 0));
+			cfg.sniperIds = ids; // empty list = sniper rule off
+		}
 		cfg.explosionKillChance = IniFloat("ExplosionKillChancePercent", cfg.explosionKillChance);
 		cfg.expDistMin = IniFloat("ExplosionDistMin", cfg.expDistMin);
 		cfg.expDistMax = IniFloat("ExplosionDistMax", cfg.expDistMax);
@@ -199,6 +213,9 @@ namespace
 		if (cfg.timeScale > 1.0f) cfg.timeScale = 1.0f;
 		if (cfg.bodyKillChance < 0.0f) cfg.bodyKillChance = 0.0f;
 		if (cfg.bodyKillChance > 100.0f) cfg.bodyKillChance = 100.0f;
+		if (cfg.sniperChance < 0.0f) cfg.sniperChance = 0.0f;
+		if (cfg.sniperChance > 100.0f) cfg.sniperChance = 100.0f;
+		if (cfg.sniperMaxDist < cfg.maxVictimDist) cfg.sniperMaxDist = cfg.maxVictimDist;
 		if (cfg.explosionKillChance < 0.0f) cfg.explosionKillChance = 0.0f;
 		if (cfg.explosionKillChance > 100.0f) cfg.explosionKillChance = 100.0f;
 		if (cfg.expDistMin < 3.0f) cfg.expDistMin = 3.0f;
@@ -432,6 +449,7 @@ namespace
 		N_GET_GROUND_Z_FOR_3D_COORD = 0x6D902EE3,
 		N_SET_CHAR_ALL_ANIMS_SPEED = 0x5BDB7E2C,
 		N_HAS_CHAR_BEEN_DAMAGED_BY_WEAPON = 0x6DB26E07,
+		N_SET_GAME_CAMERA_CONTROLS_ACTIVE = 0x57952546,
 		N_GET_CAR_CHAR_IS_USING = 0x1B067237,
 		N_GET_CAR_COORDINATES = 0x2D432EAB,
 		N_GET_CAR_FORWARD_X = 0x47A21100,
@@ -563,6 +581,7 @@ namespace
 		float  dolly = 0.0f;        // fraction of baseRadius added over the shot (negative = push in)
 		Vec3   victim = {};
 		// Vehicle shot: camera stays in front of the vehicle and follows it.
+		bool   aimLocked = false;   // gameplay camera controls currently disabled by us
 		bool   follow = false;
 		int    car = 0, ped = 0;
 		float  fwdX = 0, fwdY = 1;  // smoothed forward direction of the vehicle
@@ -584,6 +603,7 @@ namespace
 		Native(N_SET_CAM_ACTIVE, active.cam, false);
 		Native(N_DESTROY_CAM, active.cam);
 		Native(N_SET_TIME_SCALE, 1.0f);
+		if (active.aimLocked) { Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, true); active.aimLocked = false; }
 		active.on = false; active.follow = false;
 		Log("killcam end (%s), %.2fs real", why, NowSec() - active.startTime);
 	}
@@ -648,6 +668,7 @@ namespace
 		Native(N_SET_CAM_PROPAGATE, cam, true);
 		Native(N_ACTIVATE_SCRIPTED_CAMS, true, true);
 		Native(N_SET_TIME_SCALE, ts);
+		if (cfg.lockAim) { Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, false); active.aimLocked = true; }
 		active.on = true;
 		active.startTime = active.lastTick = NowSec();
 		return true;
@@ -828,6 +849,7 @@ namespace
 
 	// eWeapon: 7 pistol, 8 unused, 9 deagle ... 17 M40A1.
 	bool IsFirearm(int w) { return w >= 7 && w <= 17 && w != 8; }
+	bool IsSniperWeapon(int w) { for (int x : cfg.sniperIds) if (x == w) return true; return false; }
 	bool IsHeadBone(int b) { for (int x : cfg.headBones) if (x == b) return true; return false; }
 
 	void EvaluateDeath(int ped, const PedState& st, int player)
@@ -871,13 +893,15 @@ namespace
 		const double now = NowSec();
 		if (active.on) { Log("skipped: killcam already active"); return; }
 		if (now - lastTrigger < cfg.cooldownSec) { Log("skipped: cooldown (%.1fs left)", cfg.cooldownSec - (now - lastTrigger)); return; }
-		if (Rand01() * 100.0f >= cfg.chance) { Log("skipped: chance roll"); return; }
+		const bool sniper = (headshot || oneShot) && IsSniperWeapon(weapon);
+		const float chance = sniper ? cfg.sniperChance : cfg.chance;
+		if (Rand01() * 100.0f >= chance) { Log("skipped: chance roll (%.0f%%%s)", chance, sniper ? ", sniper" : ""); return; }
 
 		Vec3 v, p;
 		Coords(ped, v.x, v.y, v.z);
 		Coords(player, p.x, p.y, p.z);
 		float dx = v.x - p.x, dy = v.y - p.y, dz = v.z - p.z;
-		if (sqrtf(dx * dx + dy * dy + dz * dz) > cfg.maxVictimDist) { Log("skipped: victim too far"); return; }
+		if (sqrtf(dx * dx + dy * dy + dz * dz) > (sniper ? cfg.sniperMaxDist : cfg.maxVictimDist)) { Log("skipped: victim too far"); return; }
 
 		bool started;
 		if (inVehicle)
