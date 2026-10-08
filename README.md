@@ -47,6 +47,13 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
 - When a killcam ends and the camera returns to the player, slow motion continues for `AfterSlowSec` (0.5 s) at
   the time scale of the killcam that just played, then blends back to normal. During the killcam and that tail the
   player's animations run at `PlayerSpeedDuringKillcam` (0.5) so you barely move/turn. Unverified in-game.
+- The aim lock (`SET_GAME_CAMERA_CONTROLS_ACTIVE`) now also covers the slow tail. The log line `aim lock released`
+  prints the gameplay camera rotation before and after: if they differ, the lock did not hold. `RestoreAimHeading=1`
+  sets the camera heading back to the one saved at the start (experimental).
+- Not every qualifying kill triggers: `ArmNextKillChancePercent` (25) makes a kill only arm the next one, and the
+  next qualifying kill within `ArmNextKillWindowSec` (8) triggers for sure.
+- Cinematic killcams (`CinematicChancePercent` 15, 50 when armed): time scale 0.03-0.07 for 3.2 s, the victim for
+  55% of it, then a cut to a 3/4 front view of the shooter. Unverified in-game.
 - Headshot kills refill the Dead Eye meter by `HeadshotRefill` (default 15%).
 - NPCs in cars/bikes qualify too (`VehicleKills`): camera always in front of the vehicle, looking back at the
   victim and following the vehicle (heading is smoothed). No other angles; if the front spot is blocked, skipped.

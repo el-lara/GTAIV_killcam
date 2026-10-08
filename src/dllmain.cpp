@@ -39,6 +39,15 @@ namespace
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
 		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
 		float afterTimeScale = 0.0f;   // its time scale; 0 = the time scale of the killcam that just played
+		bool  restoreAim = false;      // after the killcam, put the gameplay camera back to the heading you had (experimental)
+		float chainPercent = 25.0f;    // % of qualifying kills that do NOT trigger but arm the next one
+		float chainWindowSec = 8.0f;   // the next qualifying kill within this many seconds triggers for sure
+		float ultraChance = 15.0f;     // % of killcams that are cinematic: very slow, victim then the shooter
+		float ultraChanceChained = 50.0f; // same, when the killcam was armed by an earlier kill
+		float ultraTsMin = 0.03f, ultraTsMax = 0.07f;
+		float ultraDurationSec = 3.2f; // real seconds of a cinematic killcam
+		float ultraVictimFrac = 0.55f; // fraction of it spent on the victim before cutting to the shooter
+		bool  ultraShowPlayer = true;
 		float kcPlayerSpeed = 0.5f;    // player animation speed multiplier during the killcam and its slow tail (1 = off)
 		bool  lockAim = true;          // keep your aim from changing while the killcam plays
 		int   lockAimMethod = 1;       // bit 1 = SET_GAME_CAMERA_CONTROLS_ACTIVE, bit 2 = SET_PLAYER_CONTROL
@@ -131,6 +140,25 @@ namespace
 		cfg.afterSlowSec = IniFloat("AfterSlowSec", cfg.afterSlowSec);
 		cfg.afterTimeScale = IniFloat("AfterTimeScale", cfg.afterTimeScale);
 		cfg.kcPlayerSpeed = IniFloat("PlayerSpeedDuringKillcam", cfg.kcPlayerSpeed);
+		cfg.restoreAim = IniBool("RestoreAimHeading", cfg.restoreAim);
+		cfg.chainPercent = IniFloat("ArmNextKillChancePercent", cfg.chainPercent);
+		cfg.chainWindowSec = IniFloat("ArmNextKillWindowSec", cfg.chainWindowSec);
+		cfg.ultraChance = IniFloat("CinematicChancePercent", cfg.ultraChance);
+		cfg.ultraChanceChained = IniFloat("CinematicChanceAfterArmedPercent", cfg.ultraChanceChained);
+		cfg.ultraTsMin = IniFloat("CinematicTimeScaleMin", cfg.ultraTsMin);
+		cfg.ultraTsMax = IniFloat("CinematicTimeScaleMax", cfg.ultraTsMax);
+		cfg.ultraDurationSec = IniFloat("CinematicDurationSec", cfg.ultraDurationSec);
+		cfg.ultraVictimFrac = IniFloat("CinematicVictimFraction", cfg.ultraVictimFrac);
+		cfg.ultraShowPlayer = IniBool("CinematicShowShooter", cfg.ultraShowPlayer);
+		for (float* pc : { &cfg.chainPercent, &cfg.ultraChance, &cfg.ultraChanceChained })
+		{ if (*pc < 0.0f) *pc = 0.0f; if (*pc > 100.0f) *pc = 100.0f; }
+		if (cfg.chainWindowSec < 1.0f) cfg.chainWindowSec = 1.0f;
+		if (cfg.ultraTsMin < 0.02f) cfg.ultraTsMin = 0.02f;
+		if (cfg.ultraTsMax < cfg.ultraTsMin) cfg.ultraTsMax = cfg.ultraTsMin;
+		if (cfg.ultraTsMax > 1.0f) cfg.ultraTsMax = 1.0f;
+		if (cfg.ultraDurationSec < 1.0f) cfg.ultraDurationSec = 1.0f;
+		if (cfg.ultraVictimFrac < 0.2f) cfg.ultraVictimFrac = 0.2f;
+		if (cfg.ultraVictimFrac > 0.9f) cfg.ultraVictimFrac = 0.9f;
 		if (cfg.kcPlayerSpeed < 0.05f) cfg.kcPlayerSpeed = 0.05f;
 		if (cfg.kcPlayerSpeed > 1.0f) cfg.kcPlayerSpeed = 1.0f;
 		if (cfg.afterSlowSec < 0.0f) cfg.afterSlowSec = 0.0f;
@@ -466,6 +494,10 @@ namespace
 		N_SET_CHAR_ALL_ANIMS_SPEED = 0x5BDB7E2C,
 		N_HAS_CHAR_BEEN_DAMAGED_BY_WEAPON = 0x6DB26E07,
 		N_SET_GAME_CAMERA_CONTROLS_ACTIVE = 0x57952546,
+		N_SET_GAME_CAM_HEADING = 0x45FB5CE1,
+		N_GET_GAME_CAM = 0x0B2A2801,
+		N_GET_CAM_ROT = 0x51A06698,
+		N_GET_CHAR_HEADING = 0x057A3AC7,
 		N_SET_PLAYER_CONTROL = 0x1A6203EA,
 		N_IS_PLAYER_CONTROL_ON = 0x30CD2F1F,
 		N_GET_CAR_CHAR_IS_USING = 0x1B067237,
@@ -598,6 +630,11 @@ namespace
 	} de;
 	double tailUntil = 0.0; // slow-motion tail after a killcam ends (real time)
 	float  tailScale = 0.25f; // time scale of that tail
+	bool   tailAimLocked = false; // gameplay camera controls still off during the slow tail
+	double chainUntil = 0.0;      // an earlier qualifying kill armed the next one until this time
+	bool   pendingUltra = false;  // the killcam being started is a cinematic one
+	float  savedHeading = 0.0f;   // player heading when the killcam started
+	float  camRot0[3] = {};       // gameplay camera rotation when the killcam started (diagnostics)
 	void SetPlayerAnimSpeed(int player, float v);
 
 	struct Active
@@ -616,6 +653,10 @@ namespace
 		Vec3   victim = {};
 		// Vehicle shot: camera stays in front of the vehicle and follows it.
 		float  ts = 0.25f;          // time scale of this killcam
+		float  duration = 2.0f;     // real seconds
+		bool   ultra = false;       // cinematic: very slow, cuts from the victim to the shooter
+		int    phase = 1;           // 1 = victim, 2 = shooter
+		double switchAt = 0.0;
 		bool   aimLocked = false;   // gameplay camera controls currently disabled by us
 		bool   ctrlLocked = false;  // player control currently switched off by us
 		bool   follow = false;
@@ -631,6 +672,19 @@ namespace
 		         active.victim.z + active.height };
 	}
 
+	// Re-enable the gameplay camera controls (and log how far the camera moved while they were off).
+	void ReleaseAimLock(const char* why)
+	{
+		Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, true);
+		tailAimLocked = false;
+		int gc = 0;
+		float r[3] = {};
+		Native(N_GET_GAME_CAM, &gc);
+		if (gc) Native(N_GET_CAM_ROT, gc, &r[0], &r[1], &r[2]);
+		Log("aim lock released (%s): game cam rot %.1f %.1f %.1f -> %.1f %.1f %.1f", why, camRot0[0], camRot0[1], camRot0[2], r[0], r[1], r[2]);
+		if (cfg.restoreAim) Native(N_SET_GAME_CAM_HEADING, savedHeading);
+	}
+
 	void StopKillCam(const char* why)
 	{
 		if (!active.on) return;
@@ -642,17 +696,19 @@ namespace
 		{
 			// Camera is back on the player: stay in slow motion for a moment so there is time to aim.
 			float ts = cfg.afterTimeScale > 0.0f ? cfg.afterTimeScale : active.ts;
+			if (active.ultra && cfg.afterTimeScale <= 0.0f) ts = fmaxf(ts, 0.15f); // do not freeze the tail after a cinematic
 			Native(N_SET_TIME_SCALE, ts);
 			tailScale = ts;
 			de.cur = ts; de.on = true; de.toggled = false;
 			tailUntil = NowSec() + cfg.afterSlowSec;
+			if (active.aimLocked) { tailAimLocked = true; active.aimLocked = false; } // keep the aim locked until the tail ends
 		}
 		else
 		{
 			Native(N_SET_TIME_SCALE, 1.0f);
 			if (de.animApplied != 1.0f) SetPlayerAnimSpeed(PlayerPed(), 1.0f);
 		}
-		if (active.aimLocked) { Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, true); active.aimLocked = false; }
+		if (active.aimLocked) { ReleaseAimLock(why); active.aimLocked = false; }
 		if (active.ctrlLocked)
 		{
 			int pid = (int)Native(N_GET_PLAYER_ID);
@@ -711,8 +767,21 @@ namespace
 		return false;
 	}
 
+	float PickTimeScale()
+	{
+		if (pendingUltra) return RandRange(cfg.ultraTsMin, cfg.ultraTsMax);
+		return cfg.varyTimeScale ? RandRange(cfg.timeScaleMin, cfg.timeScaleMax) : cfg.timeScale;
+	}
+
 	bool BeginCam(const Vec3& p, const Vec3& target, float ts)
 	{
+		// Remember where the gameplay camera points (before the scripted camera takes over).
+		{
+			int gc = 0;
+			Native(N_GET_GAME_CAM, &gc);
+			if (gc) Native(N_GET_CAM_ROT, gc, &camRot0[0], &camRot0[1], &camRot0[2]);
+			Native(N_GET_CHAR_HEADING, PlayerPed(), &savedHeading);
+		}
 		int cam = 0;
 		Native(N_CREATE_CAM, 14, &cam);
 		if (!cam) { Log("skipped: CREATE_CAM returned 0"); return false; }
@@ -735,6 +804,10 @@ namespace
 		}
 		active.on = true;
 		active.startTime = active.lastTick = NowSec();
+		active.ultra = pendingUltra;
+		active.duration = active.ultra ? cfg.ultraDurationSec : cfg.durationSec;
+		active.phase = 1;
+		active.switchAt = active.startTime + active.duration * cfg.ultraVictimFrac;
 		return true;
 	}
 
@@ -770,12 +843,12 @@ namespace
 		}
 		if (dist == 0) { Log("skipped: no clear spot in front of the vehicle"); return false; }
 
-		const float ts = cfg.varyTimeScale ? RandRange(cfg.timeScaleMin, cfg.timeScaleMax) : cfg.timeScale;
+		const float ts = PickTimeScale();
 		if (!BeginCam(p, target, ts)) return false;
 		active.follow = true; active.car = car; active.ped = ped;
 		active.fwdX = fx; active.fwdY = fy; active.dist = dist;
 		active.orbit = 0; active.dolly = 0;
-		Log("killcam start: vehicle-front timescale %.2f height %.1f dist %.1f victim (%.1f %.1f %.1f)", ts, active.height, dist, v.x, v.y, v.z);
+		Log("killcam start%s: vehicle-front timescale %.2f height %.1f dist %.1f victim (%.1f %.1f %.1f)", pendingUltra ? " [CINEMATIC]" : "", ts, active.height, dist, v.x, v.y, v.z);
 		return true;
 	}
 
@@ -850,22 +923,57 @@ namespace
 		active.baseRadius = fr; // radius changes are relative to the spot that was accepted
 		Vec3 p = CamPos(fa, fr);
 		const Vec3 target = { v.x, v.y, v.z + active.targetH };
-		const float ts = cfg.varyTimeScale ? RandRange(cfg.timeScaleMin, cfg.timeScaleMax) : cfg.timeScale;
+		const float ts = PickTimeScale();
 
 		if (!BeginCam(p, target, ts)) return false;
 		active.follow = false;
 
-		Log("killcam start: %s/%s timescale %.2f height %.1f radius %.1f orbit %.0fdeg/s dolly %+.2f victim (%.1f %.1f %.1f)",
-			moveName[move], angleName[angle], ts, active.height, fr, active.orbit * 57.29578f, active.dolly, v.x, v.y, v.z);
+		Log("killcam start%s: %s/%s timescale %.2f height %.1f radius %.1f orbit %.0fdeg/s dolly %+.2f victim (%.1f %.1f %.1f)",
+			pendingUltra ? " [CINEMATIC]" : "", moveName[move], angleName[angle], ts, active.height, fr, active.orbit * 57.29578f, active.dolly, v.x, v.y, v.z);
 		return true;
+	}
+
+	// Cut to a 3/4 front view of the shooter (face and weapon), like a cinematic kill shot.
+	bool StartPlayerPhase(int player)
+	{
+		Vec3 pp;
+		Coords(player, pp.x, pp.y, pp.z);
+		float h = 0;
+		Native(N_GET_CHAR_HEADING, player, &h);
+		const float hr = h * 0.0174533f;
+		const float fx = -sinf(hr), fy = cosf(hr); // direction the shooter faces
+		const Vec3 target = { pp.x, pp.y, pp.z + 0.45f };
+		const float sgn = Rand01() < 0.5f ? -1.0f : 1.0f;
+		for (float sideDeg : { 40.0f, 55.0f, 25.0f, 70.0f })
+			for (float sg : { sgn, -sgn })
+				for (float d : { RandRange(1.9f, 2.7f), 1.5f })
+				{
+					float a = sg * sideDeg * 0.0174533f;
+					float cx = fx * cosf(a) - fy * sinf(a), cy = fx * sinf(a) + fy * cosf(a);
+					Vec3 c = { pp.x + cx * d, pp.y + cy * d, pp.z + 0.5f };
+					if (CameraSpotOk(c, target))
+					{
+						Native(N_SET_CAM_POS, active.cam, c.x, c.y, c.z);
+						Native(N_POINT_CAM_AT_COORD, active.cam, target.x, target.y, target.z);
+						active.phase = 2; active.follow = false; active.orbit = 0; active.dolly = 0;
+						Log("cinematic: cut to the shooter (side %.0fdeg, dist %.1f)", sg * sideDeg, d);
+						return true;
+					}
+				}
+		active.switchAt = 1e18; // no clear spot: stay on the victim
+		Log("cinematic: no clear spot on the shooter, staying on the victim");
+		return false;
 	}
 
 	void UpdateKillCam(int player)
 	{
 		const double now = NowSec();
-		if (now - active.startTime >= cfg.durationSec) { StopKillCam("duration"); return; }
+		if (now - active.startTime >= active.duration) { StopKillCam("duration"); return; }
 		if (IsDead(player)) { StopKillCam("player dead"); return; }
 		if (NBool(Native(N_IS_PAUSE_MENU_ACTIVE))) { StopKillCam("pause menu"); return; }
+
+		if (active.ultra && cfg.ultraShowPlayer && active.phase == 1 && now >= active.switchAt) StartPlayerPhase(player);
+		if (active.phase == 2) return; // fixed camera on the shooter
 
 		if (active.follow)
 		{
@@ -879,7 +987,7 @@ namespace
 			double dt = now - active.lastTick;
 			if (dt > 0.1) dt = 0.1;
 			active.lastTick = now;
-			float t = (float)((now - active.startTime) / cfg.durationSec);
+			float t = (float)((now - active.startTime) / active.duration);
 			float na = active.angle + active.orbit * (float)dt;
 			float nr = active.baseRadius * (1.0f + active.dolly * t);
 			Vec3 p = CamPos(na, nr);
@@ -956,15 +1064,27 @@ namespace
 		float dx = v.x - p.x, dy = v.y - p.y, dz = v.z - p.z;
 		if (sqrtf(dx * dx + dy * dy + dz * dz) > (sniper ? cfg.sniperMaxDist : cfg.maxVictimDist)) { Log("skipped: victim too far"); return; }
 
+		// Not every qualifying kill triggers: some only arm the next one (the second kill shortly after does).
+		bool chained = false;
+		if (chainUntil > now) { chained = true; chainUntil = 0.0; Log("armed by an earlier kill: triggering now"); }
+		else if (Rand01() * 100.0f < cfg.chainPercent)
+		{
+			chainUntil = now + cfg.chainWindowSec;
+			Log("armed: this kill does not trigger, the next qualifying kill within %.0fs will", cfg.chainWindowSec);
+			return;
+		}
+		pendingUltra = Rand01() * 100.0f < (chained ? cfg.ultraChanceChained : cfg.ultraChance);
+
 		bool started;
 		if (inVehicle)
 		{
 			int car = 0;
 			Native(N_GET_CAR_CHAR_IS_USING, ped, &car);
-			if (!car) { Log("skipped: victim in vehicle but GET_CAR_CHAR_IS_USING gave 0"); return; }
+			if (!car) { Log("skipped: victim in vehicle but GET_CAR_CHAR_IS_USING gave 0"); pendingUltra = false; return; }
 			started = StartVehicleKillCam(ped, car, v);
 		}
 		else started = StartKillCam(v, explRoll);
+		pendingUltra = false;
 		if (started) lastTrigger = now;
 	}
 
@@ -1034,6 +1154,7 @@ namespace
 	{
 		const double now = NowSec();
 		const bool tail = !suppressed && now < tailUntil && cfg.afterSlowSec > 0.0f;
+		if (tailAimLocked && !tail) ReleaseAimLock("tail ended");
 		if (!cfg.deadEye && !tail && !de.on) return;
 		double dt = de.last > 0.0 ? now - de.last : 0.0;
 		de.last = now;
@@ -1192,8 +1313,12 @@ namespace
 
 	void SafeStop()
 	{
-		__try { StopKillCam("fault"); }
-		__except (EXCEPTION_EXECUTE_HANDLER) { active.on = false; }
+		__try
+		{
+			StopKillCam("fault");
+			if (tailAimLocked) ReleaseAimLock("fault");
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) { active.on = false; tailAimLocked = false; }
 	}
 
 	void Heartbeat()
