@@ -40,6 +40,8 @@ namespace
 		float expDistMin = 7.0f, expDistMax = 12.0f;
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
 		float killRefill = 0.05f;      // ... and per any other kill you make
+		float healthKillActive = 5.0f;      // health points restored per kill while Dead Eye is active (0 = off)
+		float healthHeadshotActive = 10.0f; // ... and per headshot kill
 		float headshotRefillActive = 0.05f; // same as headshotRefill but while Dead Eye is active
 		float killRefillActive = 0.025f;    // same as killRefill but while Dead Eye is active
 		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
@@ -247,6 +249,10 @@ namespace
 			cfg.killRefill = f("KillRefill", cfg.killRefill);
 			cfg.headshotRefillActive = f("HeadshotRefillWhileActive", cfg.headshotRefillActive);
 			cfg.killRefillActive = f("KillRefillWhileActive", cfg.killRefillActive);
+			cfg.healthKillActive = f("HealthOnKillWhileActive", cfg.healthKillActive);
+			cfg.healthHeadshotActive = f("HealthOnHeadshotWhileActive", cfg.healthHeadshotActive);
+			if (cfg.healthKillActive < 0.0f) cfg.healthKillActive = 0.0f;
+			if (cfg.healthHeadshotActive < 0.0f) cfg.healthHeadshotActive = 0.0f;
 			if (cfg.headshotRefillActive < 0.0f) cfg.headshotRefillActive = 0.0f;
 			if (cfg.headshotRefillActive > 1.0f) cfg.headshotRefillActive = 1.0f;
 			if (cfg.killRefillActive < 0.0f) cfg.killRefillActive = 0.0f;
@@ -530,6 +536,8 @@ namespace
 		N_SET_CHAR_ALL_ANIMS_SPEED = 0x5BDB7E2C,
 		N_HAS_CHAR_BEEN_DAMAGED_BY_WEAPON = 0x6DB26E07,
 		N_SET_GAME_CAMERA_CONTROLS_ACTIVE = 0x57952546,
+		N_SET_CHAR_HEALTH = 0x575E2880,
+		N_GET_PLAYER_MAX_HEALTH = 0x52F27084,
 		N_SET_GAME_CAM_HEADING = 0x45FB5CE1,
 		N_GET_GAME_CAM = 0x0B2A2801,
 		N_GET_CAM_ROT = 0x51A06698,
@@ -1141,6 +1149,25 @@ namespace
 			{
 				de.energy = fminf(1.0f, de.energy + refill);
 				Log("%s%s: dead eye +%.1f%% -> %.1f%%", headshot ? "headshot" : "kill", active ? " (while active)" : "", refill * 100.0f, de.energy * 100.0f);
+			}
+
+			// While Dead Eye is active, kills also give back a little health.
+			const float hp = headshot ? cfg.healthHeadshotActive : cfg.healthKillActive;
+			if (active && hp > 0.0f)
+			{
+				const int pid = (int)Native(N_GET_PLAYER_ID);
+				int maxHp = 0;
+				Native(N_GET_PLAYER_MAX_HEALTH, pid, &maxHp);
+				if (maxHp <= 0) maxHp = 200;
+				int cur = 0;
+				Native(N_GET_CHAR_HEALTH, player, &cur);
+				if (cur > 0 && cur < maxHp)
+				{
+					int nh = cur + (int)(hp + 0.5f);
+					if (nh > maxHp) nh = maxHp;
+					Native(N_SET_CHAR_HEALTH, player, nh);
+					Log("dead eye kill: health %d -> %d (max %d)", cur, nh, maxHp);
+				}
 			}
 		}
 
