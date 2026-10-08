@@ -47,7 +47,9 @@ Hold the key (default Left Alt, `[DeadEye] Key`) to drop `SET_TIME_SCALE` to 0.2
 The player's animations are sped up by `PlayerSpeed / TimeScale` (default 0.85 / 0.25 = x3.4,
 capped at `MaxAnimSpeed`) using `SET_CHAR_ALL_ANIMS_SPEED`, so the player moves, aims and reloads
 at about 85% of normal speed while NPCs and physics run at 25%. It is suspended while a killcam
-plays and released if the player dies or the pause menu opens. Not tested in-game: whether the
+plays and released if the player dies or the pause menu opens. It has an energy meter (10 s by default,
+1 s delay, then refills over 20 s; after running dry it needs 20% to start again), shown as a text bar
+`DEAD EYE [=====.....]` drawn with the game's text natives. Not tested in-game: whether the
 anim-speed native multiplies with the time scale as assumed, and whether camera/aim turning is
 slowed, are unknown. `PlayerSpeedMethod=2` tries the move-speed multiplier instead.
 

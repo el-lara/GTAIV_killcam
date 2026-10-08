@@ -53,6 +53,14 @@ namespace
 		float dePlayerSpeed = 0.85f;   // player speed relative to normal time (1 = unaffected)
 		float deMaxAnimSpeed = 4.0f;   // cap for the player's animation speed multiplier
 		float deRampSec = 0.15f;       // real seconds to blend in/out
+		float deMaxSec = 10.0f;        // seconds of Dead Eye on a full meter
+		float deRechargeDelaySec = 1.0f; // after releasing, wait this long before recharging
+		float deRechargeSec = 20.0f;   // seconds to refill an empty meter
+		float deMinToStart = 0.20f;    // after running dry, the meter must refill to this fraction to start again
+		bool  deHud = true;
+		bool  deHudAlways = false;     // false = only show while using or recharging
+		float deHudX = 0.50f, deHudY = 0.90f;
+		float deHudScale = 0.35f;
 		int   deMethod = 1;            // 1 = SET_CHAR_ALL_ANIMS_SPEED, 2 = SET_CHAR_MOVE_ANIM_SPEED_MULTIPLIER, 0 = world only
 		char  raycastPattern[256] = "";
 		int   raycastOffset = 0;
@@ -132,12 +140,28 @@ namespace
 			cfg.dePlayerSpeed = f("PlayerSpeed", cfg.dePlayerSpeed);
 			cfg.deMaxAnimSpeed = f("MaxAnimSpeed", cfg.deMaxAnimSpeed);
 			cfg.deRampSec = f("RampSec", cfg.deRampSec);
+			cfg.deMaxSec = f("MaxSeconds", cfg.deMaxSec);
+			cfg.deRechargeDelaySec = f("RechargeDelaySec", cfg.deRechargeDelaySec);
+			cfg.deRechargeSec = f("RechargeSeconds", cfg.deRechargeSec);
+			cfg.deMinToStart = f("MinToStart", cfg.deMinToStart);
+			cfg.deHudX = f("HudX", cfg.deHudX);
+			cfg.deHudY = f("HudY", cfg.deHudY);
+			cfg.deHudScale = f("HudScale", cfg.deHudScale);
+		}
+		cfg.deHud = GetPrivateProfileIntA("DeadEye", "Hud", cfg.deHud ? 1 : 0, iniPath) != 0;
+		cfg.deHudAlways = GetPrivateProfileIntA("DeadEye", "HudAlways", cfg.deHudAlways ? 1 : 0, iniPath) != 0;
+		{
 		}
 		if (cfg.deTimeScale < 0.05f) cfg.deTimeScale = 0.05f;
 		if (cfg.deTimeScale > 1.0f) cfg.deTimeScale = 1.0f;
 		if (cfg.dePlayerSpeed < 0.1f) cfg.dePlayerSpeed = 0.1f;
 		if (cfg.deMaxAnimSpeed < 1.0f) cfg.deMaxAnimSpeed = 1.0f;
 		if (cfg.deRampSec < 0.0f) cfg.deRampSec = 0.0f;
+		if (cfg.deMaxSec < 0.5f) cfg.deMaxSec = 0.5f;
+		if (cfg.deRechargeDelaySec < 0.0f) cfg.deRechargeDelaySec = 0.0f;
+		if (cfg.deRechargeSec < 0.5f) cfg.deRechargeSec = 0.5f;
+		if (cfg.deMinToStart < 0.0f) cfg.deMinToStart = 0.0f;
+		if (cfg.deMinToStart > 1.0f) cfg.deMinToStart = 1.0f;
 
 		char buf[128];
 		GetPrivateProfileStringA("KillCam", "HeadBoneIds", "1205", buf, sizeof(buf), iniPath);
@@ -379,6 +403,14 @@ namespace
 		N_IS_PAUSE_MENU_ACTIVE = 0x6C4568A7,
 		N_GET_GROUND_Z_FOR_3D_COORD = 0x6D902EE3,
 		N_SET_CHAR_ALL_ANIMS_SPEED = 0x5BDB7E2C,
+		N_SET_TEXT_SCALE = 0x02C069E5,
+		N_SET_TEXT_COLOUR = 0x19C967B5,
+		N_SET_TEXT_FONT = 0x75363BB5,
+		N_SET_TEXT_DROPSHADOW = 0x58F5023F,
+		N_SET_TEXT_CENTRE = 0x204A6AA4,
+		N_SET_TEXT_PROPORTIONAL = 0x15585A65,
+		N_SET_TEXT_BACKGROUND = 0x768F5140,
+		N_DISPLAY_TEXT_WITH_LITERAL_STRING = 0x661B239A,
 		N_SET_CHAR_MOVE_ANIM_SPEED_MULTIPLIER = 0x5DC456DE,
 	};
 
@@ -705,6 +737,9 @@ namespace
 		float  cur = 1.0f;       // current world time scale
 		double last = 0.0;
 		float  animApplied = 1.0f;
+		float  energy = 1.0f;    // 0..1
+		bool   lockedOut = false; // ran dry; waits for energy >= deMinToStart
+		double releasedAt = 0.0;  // when the effect last stopped (real time)
 	} de;
 
 	bool GameHasFocus()
@@ -729,10 +764,42 @@ namespace
 		if (de.animApplied != 1.0f) SetPlayerAnimSpeed(player, 1.0f);
 		if (!active.on) Native(N_SET_TIME_SCALE, 1.0f); // the killcam owns the scale while it runs
 		de.on = false; de.cur = 1.0f; de.toggled = false;
-		Log("dead eye off (%s)", why);
+		de.releasedAt = NowSec();
+		Log("dead eye off (%s), energy %.0f%%", why, de.energy * 100.0f);
 	}
 
-	void DeadEyeUpdate(int player)
+	// Text meter, e.g. "DEAD EYE [=========.........]". Must be drawn every frame.
+	void DrawDeadEyeHud(bool usingNow)
+	{
+		if (!cfg.deHud) return;
+		if (!usingNow && !cfg.deHudAlways && de.energy >= 0.999f) return;
+		const int n = 20;
+		int filled = (int)(de.energy * n + 0.5f);
+		char bar[64];
+		int k = 0;
+		bar[k++] = '[';
+		for (int i = 0; i < n; i++) bar[k++] = i < filled ? '=' : '.';
+		bar[k++] = ']';
+		bar[k] = 0;
+		char line[96];
+		snprintf(line, sizeof(line), "DEAD EYE %s", bar);
+
+		unsigned r = 255, g = 255, b = 255; // ready
+		if (usingNow) { r = 255; g = 200; b = 60; }
+		else if (de.lockedOut) { r = 230; g = 60; b = 60; }
+
+		Native(N_SET_TEXT_FONT, 0u);
+		Native(N_SET_TEXT_SCALE, cfg.deHudScale, cfg.deHudScale * 1.4f);
+		Native(N_SET_TEXT_COLOUR, r, g, b, 235u);
+		Native(N_SET_TEXT_DROPSHADOW, true, 0u, 0u, 0u, 255u);
+		Native(N_SET_TEXT_CENTRE, true);
+		Native(N_SET_TEXT_PROPORTIONAL, false);
+		Native(N_SET_TEXT_BACKGROUND, false);
+		Native(N_DISPLAY_TEXT_WITH_LITERAL_STRING, cfg.deHudX, cfg.deHudY, "STRING", (const char*)line);
+	}
+
+	// suppressed = a killcam is running: the effect is off but the meter keeps recharging.
+	void DeadEyeUpdate(int player, bool suppressed)
 	{
 		if (!cfg.deadEye) return;
 		const double now = NowSec();
@@ -740,7 +807,7 @@ namespace
 		de.last = now;
 		if (dt > 0.1) dt = 0.1;
 
-		bool down = GameHasFocus() && (GetAsyncKeyState(cfg.deKey) & 0x8000) != 0;
+		bool down = !suppressed && GameHasFocus() && (GetAsyncKeyState(cfg.deKey) & 0x8000) != 0;
 		bool want;
 		if (cfg.deToggle)
 		{
@@ -750,12 +817,34 @@ namespace
 		else want = down;
 		de.keyWasDown = down;
 
-		if (IsDead(player) || NBool(Native(N_IS_PAUSE_MENU_ACTIVE))) want = false;
+		if (suppressed || IsDead(player) || NBool(Native(N_IS_PAUSE_MENU_ACTIVE))) want = false;
+
+		// Energy: drains while active, then recharges after a short delay.
+		if (de.lockedOut && de.energy >= cfg.deMinToStart) { de.lockedOut = false; Log("dead eye ready again"); }
+		if (de.lockedOut) want = false;
+		if (want && de.energy <= 0.0f) want = false;
+
+		if (want)
+		{
+			de.energy -= (float)(dt / cfg.deMaxSec);
+			if (de.energy <= 0.0f)
+			{
+				de.energy = 0.0f; de.lockedOut = true; want = false;
+				Log("dead eye ran dry");
+			}
+		}
+		else if (now - de.releasedAt >= cfg.deRechargeDelaySec && de.energy < 1.0f)
+		{
+			de.energy += (float)(dt / cfg.deRechargeSec);
+			if (de.energy > 1.0f) de.energy = 1.0f;
+		}
+
+		DrawDeadEyeHud(want);
 
 		const float target = want ? cfg.deTimeScale : 1.0f;
 		if (!want && !de.on) return;
 
-		if (!de.on) { de.on = true; Log("dead eye on (timescale %.2f, player speed %.2f, method %d)", cfg.deTimeScale, cfg.dePlayerSpeed, cfg.deMethod); }
+		if (!de.on) { de.on = true; Log("dead eye on (timescale %.2f, player speed %.2f, method %d, energy %.0f%%)", cfg.deTimeScale, cfg.dePlayerSpeed, cfg.deMethod, de.energy * 100.0f); }
 
 		// Blend the world scale toward the target (rate: full 1 -> deTimeScale span in deRampSec).
 		float span = 1.0f - cfg.deTimeScale;
@@ -763,7 +852,8 @@ namespace
 		if (de.cur < target) de.cur = fminf(target, de.cur + step);
 		else if (de.cur > target) de.cur = fmaxf(target, de.cur - step);
 
-		if (!want && de.cur >= 0.999f) { DeadEyeReset(player, "released"); return; }
+		if (!want && de.cur >= 0.999f) { DeadEyeReset(player, de.lockedOut ? "ran dry" : "released"); return; }
+		if (!want) de.releasedAt = now; // keep the recharge delay counting from the end of the blend-out
 
 		Native(N_SET_TIME_SCALE, de.cur);
 		float anim = cfg.deMethod ? fminf(cfg.deMaxAnimSpeed, fmaxf(1.0f, cfg.dePlayerSpeed / de.cur)) : 1.0f;
@@ -807,7 +897,8 @@ namespace
 		ClearBail();
 		statTicks++;
 
-		if (active.on) DeadEyeReset(player, "killcam started"); else DeadEyeUpdate(player);
+		if (active.on) DeadEyeReset(player, "killcam started");
+		DeadEyeUpdate(player, active.on);
 
 		if (active.on) UpdateKillCam(player);
 
