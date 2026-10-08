@@ -38,6 +38,15 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
   While running it orbits and only moves to positions that pass the same check.
 - Duration and cooldown use real time. Ends early if the player dies or the pause menu opens.
 
+## Diagnosing with the log
+
+- `heartbeat:` every 5 s: frames seen by the hook, ticks that passed all guards, ped count,
+  player handle, pause flags. `frames` rising with `ticks` stuck = a guard is bailing.
+- `bail: ...` is logged once per reason change (paused, ped pool invalid, player handle 0).
+- At startup it dumps the bytes around the pause-flag match and logs both flag pointers.
+- Do not validate patterns against `GTAIV.exe` on disk: the Complete Edition exe is protected
+  (`.tbm`/`.rkstr`, parts of `.text` encrypted). Only in-memory scanning works.
+
 ## Known limits (read this)
 
 Not compiled or run: the authoring environment has no Windows/MSVC. `dllmain.cpp` was only

@@ -190,6 +190,13 @@ namespace
 		return nullptr;
 	}
 
+	bool InImage(const void* ptr)
+	{
+		auto base = (uint8_t*)GetModuleHandleA(nullptr);
+		auto nt = (IMAGE_NT_HEADERS*)(base + ((IMAGE_DOS_HEADER*)base)->e_lfanew);
+		return (const uint8_t*)ptr >= base && (const uint8_t*)ptr < base + nt->OptionalHeader.SizeOfImage;
+	}
+
 	// ------------------------------------------------------------ game access
 	struct Game
 	{
@@ -533,15 +540,42 @@ namespace
 		if (StartKillCam(v)) lastTrigger = now;
 	}
 
+	// Diagnostics: every early exit is logged once per change of reason (not per frame).
+	int      lastBail = 0;
+	uint32_t statFrames = 0, statTicks = 0;
+	int      statPeds = -1, statPlayer = -1;
+
+	void Bail(int reason, const char* fmt, ...)
+	{
+		if (reason == lastBail) return;
+		lastBail = reason;
+		if (!cfg.logEnabled) return;
+		char msg[256];
+		va_list va;
+		va_start(va, fmt);
+		vsnprintf(msg, sizeof(msg), fmt, va);
+		va_end(va);
+		Log("bail: %s", msg);
+	}
+	void ClearBail() { if (lastBail) { lastBail = 0; Log("bail cleared: ticking normally"); } }
+
 	void Tick()
 	{
 		if (!cfg.enabled) return;
 
 		fwPool* pool = game.pedPoolVar ? (fwPool*)*game.pedPoolVar : nullptr;
-		if (!pool || !pool->storage || !pool->flags || pool->size <= 0 || pool->size > 4096 || pool->stride <= 0) return;
+		if (!pool) { Bail(10, "ped pool pointer is NULL (var=%p)", (void*)game.pedPoolVar); return; }
+		if (!pool->storage || !pool->flags || pool->size <= 0 || pool->size > 4096 || pool->stride <= 0)
+		{
+			Bail(11, "ped pool invalid (storage=%p flags=%p count=%d itemSize=%d)", pool->storage, pool->flags, pool->size, pool->stride);
+			return;
+		}
 
 		int player = PlayerPed();
-		if (!player) { peds.clear(); return; }
+		statPlayer = player;
+		if (!player) { Bail(12, "player handle is 0"); peds.clear(); return; }
+		ClearBail();
+		statTicks++;
 
 		if (active.on) UpdateKillCam(player);
 
@@ -570,6 +604,7 @@ namespace
 			}
 		}
 
+		statPeds = (int)seen.size();
 		for (auto it = peds.begin(); it != peds.end();)
 		{
 			bool present = false;
@@ -596,9 +631,35 @@ namespace
 		__except (EXCEPTION_EXECUTE_HANDLER) { active.on = false; }
 	}
 
+	void Heartbeat()
+	{
+		static double next = 0.0;
+		double now = NowSec();
+		if (now < next) return;
+		next = now + 5.0;
+		Log("heartbeat: frames=%u ticks=%u peds=%d player=%d userPause=%d scriptPause=%d killcam=%d faults=%d",
+			statFrames, statTicks, statPeds, statPlayer,
+			game.userPause ? *game.userPause : -1, game.scriptPause ? *game.scriptPause : -1,
+			(int)active.on, faults);
+	}
+
 	void GameProcessHook()
 	{
-		if (cfg.enabled && faults < 3 && game.userPause && game.scriptPause && !*game.userPause && !*game.scriptPause)
+		statFrames++;
+		Heartbeat();
+		if (!cfg.enabled || faults >= 3)
+		{
+			origGameProcess();
+			return;
+		}
+
+		bool run = false;
+		if (!game.userPause) Bail(1, "user pause flag pointer is NULL");
+		else if (*game.userPause) Bail(2, "paused: userPause=%d scriptPause=%d", *game.userPause, game.scriptPause ? *game.scriptPause : -1);
+		else if (game.scriptPause && *game.scriptPause) Bail(3, "paused: userPause=0 scriptPause=%d", *game.scriptPause);
+		else run = true;
+
+		if (run)
 		{
 			// Natives expect an active script thread; give them a zeroed dummy for this call.
 			void* saved = game.currentThreadVar ? *game.currentThreadVar : nullptr;
@@ -627,8 +688,20 @@ namespace
 		game.nativeTableVar = *(uint32_t***)(p + 2);
 
 		if (!(p = Find("pause flags", { "0F B6 0D ? ? ? ? 0F B6 C0 0B C1" }, &n))) return false;
+		{
+			char dump[128] = {};
+			for (int i = 0; i < 24; i++) snprintf(dump + i * 3, 4, "%02X ", p[i]);
+			Log("pause flags match at %p (%u hit(s)); bytes: %s", (void*)p, (unsigned)n, dump);
+		}
 		game.userPause = *(uint8_t**)(p + 3);
-		game.scriptPause = *(uint8_t**)(p + 15);
+		// Second flag is read at +15, OUTSIDE the 12 matched bytes (FusionFix offset). Only trust it
+		// if it points inside the exe image; otherwise gate on the first flag alone.
+		uint8_t* second = *(uint8_t**)(p + 15);
+		if (!InImage(game.userPause)) { Log("userPause pointer %p outside image", (void*)game.userPause); return false; }
+		if (InImage(second)) game.scriptPause = second;
+		else { game.scriptPause = nullptr; Log("scriptPause candidate %p outside image -> ignored, gating on userPause only", (void*)second); }
+		Log("pause flags: userPause=%p(%d) scriptPause=%p(%d)", (void*)game.userPause, *game.userPause,
+			(void*)game.scriptPause, game.scriptPause ? *game.scriptPause : -1);
 
 		if (!(p = Find("ped pool", { "8B 3D ? ? ? ? 8B F1 8B 47" }, &n))) return false;
 		game.pedPoolVar = *(void****)(p + 2);
