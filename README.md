@@ -43,7 +43,7 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
 
 ## Dead Eye
 
-Hold the key (default Shift, `[DeadEye] Key`) to drop `SET_TIME_SCALE` to 0.25 with a short blend.
+Hold the key (default Left Alt, `[DeadEye] Key`) to drop `SET_TIME_SCALE` to 0.25 with a short blend.
 The player's animations are sped up by `PlayerSpeed / TimeScale` (default 0.85 / 0.25 = x3.4,
 capped at `MaxAnimSpeed`) using `SET_CHAR_ALL_ANIMS_SPEED`, so the player moves, aims and reloads
 at about 85% of normal speed while NPCs and physics run at 25%. It is suspended while a killcam

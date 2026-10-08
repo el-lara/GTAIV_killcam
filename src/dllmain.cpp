@@ -35,9 +35,9 @@ namespace
 		std::vector<int> headBones = { 0x4B5 }; // BONE_HEAD
 		// Shot variation (picked at random for every killcam)
 		bool  varyTimeScale = true;
-		float timeScaleMin = 0.15f, timeScaleMax = 0.40f;
+		float timeScaleMin = 0.10f, timeScaleMax = 0.40f;
 		float radiusMin = 2.5f, radiusMax = 4.5f;
-		float orbitSpeedMin = 10.0f, orbitSpeedMax = 35.0f; // deg/s, direction is random
+		float orbitSpeedMin = 6.0f, orbitSpeedMax = 22.0f; // deg/s, direction is random
 		float dollyAmount = 0.30f;                          // radius change over the shot (fraction)
 		float wStatic = 60, wOrbit = 30, wDolly = 10;       // movement weights
 		float wEye = 45, wHigh = 30, wLow = 25;             // camera angle weights
@@ -47,7 +47,7 @@ namespace
 		bool  logEnabled = true;
 		// Dead Eye: hold a key to slow the world while the player stays (almost) at normal speed.
 		bool  deadEye = true;
-		int   deKey = 0x10;            // VK_SHIFT (any shift); 0xA0 = left shift only
+		int   deKey = 0xA4;            // VK_LMENU (left Alt, next to the Windows key)
 		bool  deToggle = false;        // false = hold, true = press to toggle
 		float deTimeScale = 0.25f;
 		float dePlayerSpeed = 0.85f;   // player speed relative to normal time (1 = unaffected)
