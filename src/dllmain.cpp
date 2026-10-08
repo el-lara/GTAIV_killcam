@@ -27,7 +27,9 @@ namespace
 	{
 		bool  enabled = true;
 		float chance = 100.0f;         // % chance a qualifying kill triggers the killcam
-		float cooldownSec = 15.0f;     // real seconds between killcams (counted from trigger)
+		float cooldownSec = 30.0f;     // usual real seconds between killcams (counted from trigger)
+		float shortCooldownSec = 15.0f; // shorter cooldown that applies after some killcams
+		float shortCooldownChance = 45.0f; // % of killcams followed by the short cooldown instead
 		float durationSec = 2.0f;      // real seconds of slow motion
 		float timeScale = 0.25f;
 		bool  onHeadshot = true;
@@ -39,7 +41,8 @@ namespace
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
 		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
 		float afterTimeScale = 0.0f;   // its time scale; 0 = the time scale of the killcam that just played
-		bool  restoreAim = false;      // after the killcam, put the gameplay camera back to the heading you had (experimental)
+		bool  restoreAim = true;       // after the killcam, put the gameplay camera back to the heading you had (experimental)
+		bool  holdHeading = true;      // keep the player's heading fixed during the killcam and its tail (stops the character turning)
 		float chainPercent = 25.0f;    // % of qualifying kills that do NOT trigger but arm the next one
 		float chainWindowSec = 8.0f;   // the next qualifying kill within this many seconds triggers for sure
 		float ultraChance = 15.0f;     // % of killcams that are cinematic: very slow, victim then the shooter
@@ -131,6 +134,11 @@ namespace
 		cfg.enabled = IniBool("Enabled", cfg.enabled);
 		cfg.chance = IniFloat("ChancePercent", cfg.chance);
 		cfg.cooldownSec = IniFloat("CooldownSec", cfg.cooldownSec);
+		cfg.shortCooldownSec = IniFloat("ShortCooldownSec", cfg.shortCooldownSec);
+		cfg.shortCooldownChance = IniFloat("ShortCooldownChancePercent", cfg.shortCooldownChance);
+		if (cfg.shortCooldownSec < 0.0f) cfg.shortCooldownSec = 0.0f;
+		if (cfg.shortCooldownChance < 0.0f) cfg.shortCooldownChance = 0.0f;
+		if (cfg.shortCooldownChance > 100.0f) cfg.shortCooldownChance = 100.0f;
 		cfg.durationSec = IniFloat("DurationSec", cfg.durationSec);
 		cfg.timeScale = IniFloat("TimeScale", cfg.timeScale);
 		cfg.onHeadshot = IniBool("TriggerOnHeadshot", cfg.onHeadshot);
@@ -141,6 +149,7 @@ namespace
 		cfg.afterTimeScale = IniFloat("AfterTimeScale", cfg.afterTimeScale);
 		cfg.kcPlayerSpeed = IniFloat("PlayerSpeedDuringKillcam", cfg.kcPlayerSpeed);
 		cfg.restoreAim = IniBool("RestoreAimHeading", cfg.restoreAim);
+		cfg.holdHeading = IniBool("HoldPlayerHeading", cfg.holdHeading);
 		cfg.chainPercent = IniFloat("ArmNextKillChancePercent", cfg.chainPercent);
 		cfg.chainWindowSec = IniFloat("ArmNextKillWindowSec", cfg.chainWindowSec);
 		cfg.ultraChance = IniFloat("CinematicChancePercent", cfg.ultraChance);
@@ -498,6 +507,7 @@ namespace
 		N_GET_GAME_CAM = 0x0B2A2801,
 		N_GET_CAM_ROT = 0x51A06698,
 		N_GET_CHAR_HEADING = 0x057A3AC7,
+		N_SET_CHAR_HEADING = 0x46B5523B,
 		N_SET_PLAYER_CONTROL = 0x1A6203EA,
 		N_IS_PLAYER_CONTROL_ON = 0x30CD2F1F,
 		N_GET_CAR_CHAR_IS_USING = 0x1B067237,
@@ -630,6 +640,7 @@ namespace
 	} de;
 	double tailUntil = 0.0; // slow-motion tail after a killcam ends (real time)
 	float  tailScale = 0.25f; // time scale of that tail
+	float  currentCooldown = 0.0f; // cooldown chosen when the last killcam started
 	bool   tailAimLocked = false; // gameplay camera controls still off during the slow tail
 	double chainUntil = 0.0;      // an earlier qualifying kill armed the next one until this time
 	bool   pendingUltra = false;  // the killcam being started is a cinematic one
@@ -675,7 +686,7 @@ namespace
 	// Re-enable the gameplay camera controls (and log how far the camera moved while they were off).
 	void ReleaseAimLock(const char* why)
 	{
-		Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, true);
+		if (cfg.lockAimMethod & 1) Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, true);
 		tailAimLocked = false;
 		int gc = 0;
 		float r[3] = {};
@@ -798,7 +809,8 @@ namespace
 		{
 			int pid = (int)Native(N_GET_PLAYER_ID);
 			bool before = NBool(Native(N_IS_PLAYER_CONTROL_ON, pid));
-			if (cfg.lockAimMethod & 1) { Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, false); active.aimLocked = true; }
+			if (cfg.lockAimMethod & 1) Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, false);
+			active.aimLocked = true; // also covers the heading hold / restore, which work without the camera-controls native
 			if ((cfg.lockAimMethod & 2) && before) { Native(N_SET_PLAYER_CONTROL, pid, false); active.ctrlLocked = true; }
 			Log("aim lock (method %d): player control before=%d after=%d", cfg.lockAimMethod, (int)before, (int)NBool(Native(N_IS_PLAYER_CONTROL_ON, pid)));
 		}
@@ -1053,7 +1065,7 @@ namespace
 		const double now = NowSec();
 		if (active.on) { Log("skipped: killcam already active"); return; }
 		const bool sniper = (headshot || oneShot) && IsSniperWeapon(weapon);
-		const float cooldown = sniper ? cfg.sniperCooldownSec : cfg.cooldownSec;
+		const float cooldown = sniper ? cfg.sniperCooldownSec : currentCooldown;
 		if (now - lastTrigger < cooldown) { Log("skipped: cooldown (%.1fs left%s)", cooldown - (now - lastTrigger), sniper ? ", sniper" : ""); return; }
 		const float chance = sniper ? cfg.sniperChance : cfg.chance;
 		if (Rand01() * 100.0f >= chance) { Log("skipped: chance roll (%.0f%%%s)", chance, sniper ? ", sniper" : ""); return; }
@@ -1085,7 +1097,12 @@ namespace
 		}
 		else started = StartKillCam(v, explRoll);
 		pendingUltra = false;
-		if (started) lastTrigger = now;
+		if (started)
+		{
+			lastTrigger = now;
+			currentCooldown = Rand01() * 100.0f < cfg.shortCooldownChance ? cfg.shortCooldownSec : cfg.cooldownSec;
+			Log("next cooldown: %.0fs", currentCooldown);
+		}
 	}
 
 	// ---------------------------------------------------------------- dead eye
@@ -1262,6 +1279,7 @@ namespace
 				SetPlayerAnimSpeed(player, cfg.kcPlayerSpeed); // player stays slow while the killcam camera plays
 		}
 		DeadEyeUpdate(player, active.on);
+		if (cfg.holdHeading && cfg.lockAim && (active.on || tailAimLocked)) Native(N_SET_CHAR_HEADING, player, savedHeading);
 
 		if (active.on) UpdateKillCam(player);
 

@@ -48,8 +48,11 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
   the time scale of the killcam that just played, then blends back to normal. During the killcam and that tail the
   player's animations run at `PlayerSpeedDuringKillcam` (0.5) so you barely move/turn. Unverified in-game.
 - The aim lock (`SET_GAME_CAMERA_CONTROLS_ACTIVE`) now also covers the slow tail. The log line `aim lock released`
-  prints the gameplay camera rotation before and after: if they differ, the lock did not hold. `RestoreAimHeading=1`
-  sets the camera heading back to the one saved at the start (experimental).
+  prints the gameplay camera rotation before and after: if they differ, the lock did not hold. `HoldPlayerHeading` (default on) re-applies the player's heading every frame during the killcam and its tail so the
+  character cannot turn, and `RestoreAimHeading` (default on) sets the gameplay camera heading back to the saved one
+  when the lock ends (experimental: the angle convention of `SET_GAME_CAM_HEADING` is unverified).
+- Cooldown: `CooldownSec` 30, but after `ShortCooldownChancePercent` (45) of killcams it is `ShortCooldownSec` (15);
+  chosen when each killcam starts and logged as `next cooldown`. Sniper kills keep `SniperCooldownSec`.
 - Not every qualifying kill triggers: `ArmNextKillChancePercent` (25) makes a kill only arm the next one, and the
   next qualifying kill within `ArmNextKillWindowSec` (8) triggers for sure.
 - Cinematic killcams (`CinematicChancePercent` 15, 50 when armed): time scale 0.03-0.07 for 3.2 s, the victim for
