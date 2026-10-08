@@ -1,0 +1,25 @@
+name: build
+on:
+  push:
+    branches: [ "claude/upbeat-shannon-oydhha" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build (Release | Win32)
+        run: msbuild build/GTAIV_KillCam.sln /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /m
+      - name: Stage files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/plugins | Out-Null
+          Copy-Item bin/GTAIV_KillCam.asi dist/plugins/
+          Copy-Item GTAIV_KillCam.ini dist/plugins/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GTAIV_KillCam
+          path: dist/
+          if-no-files-found: error
