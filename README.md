@@ -41,6 +41,16 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
   eye level; none clear -> killcam skipped. Moving shots only move to positions that pass the same check.
 - Duration and cooldown use real time. Ends early if the player dies or the pause menu opens.
 
+## Dead Eye
+
+Hold the key (default Shift, `[DeadEye] Key`) to drop `SET_TIME_SCALE` to 0.25 with a short blend.
+The player's animations are sped up by `PlayerSpeed / TimeScale` (default 0.85 / 0.25 = x3.4,
+capped at `MaxAnimSpeed`) using `SET_CHAR_ALL_ANIMS_SPEED`, so the player moves, aims and reloads
+at about 85% of normal speed while NPCs and physics run at 25%. It is suspended while a killcam
+plays and released if the player dies or the pause menu opens. Not tested in-game: whether the
+anim-speed native multiplies with the time scale as assumed, and whether camera/aim turning is
+slowed, are unknown. `PlayerSpeedMethod=2` tries the move-speed multiplier instead.
+
 ## Diagnosing with the log
 
 - `heartbeat:` every 5 s: frames seen by the hook, ticks that passed all guards, ped count,

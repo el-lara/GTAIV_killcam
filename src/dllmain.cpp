@@ -45,6 +45,15 @@ namespace
 		float fov = 45.0f;
 		float maxVictimDist = 60.0f;
 		bool  logEnabled = true;
+		// Dead Eye: hold a key to slow the world while the player stays (almost) at normal speed.
+		bool  deadEye = true;
+		int   deKey = 0x10;            // VK_SHIFT (any shift); 0xA0 = left shift only
+		bool  deToggle = false;        // false = hold, true = press to toggle
+		float deTimeScale = 0.25f;
+		float dePlayerSpeed = 0.85f;   // player speed relative to normal time (1 = unaffected)
+		float deMaxAnimSpeed = 4.0f;   // cap for the player's animation speed multiplier
+		float deRampSec = 0.15f;       // real seconds to blend in/out
+		int   deMethod = 1;            // 1 = SET_CHAR_ALL_ANIMS_SPEED, 2 = SET_CHAR_MOVE_ANIM_SPEED_MULTIPLIER, 0 = world only
 		char  raycastPattern[256] = "";
 		int   raycastOffset = 0;
 		unsigned raycastFlags = 142;   // statics | buildings | vehicles | objects
@@ -112,6 +121,23 @@ namespace
 		cfg.fov = IniFloat("CamFov", cfg.fov);
 		cfg.maxVictimDist = IniFloat("MaxVictimDistance", cfg.maxVictimDist);
 		cfg.logEnabled = IniBool("Log", cfg.logEnabled);
+		cfg.deadEye = GetPrivateProfileIntA("DeadEye", "Enabled", cfg.deadEye ? 1 : 0, iniPath) != 0;
+		cfg.deKey = (int)GetPrivateProfileIntA("DeadEye", "Key", cfg.deKey, iniPath);
+		cfg.deToggle = GetPrivateProfileIntA("DeadEye", "Toggle", cfg.deToggle ? 1 : 0, iniPath) != 0;
+		cfg.deMethod = (int)GetPrivateProfileIntA("DeadEye", "PlayerSpeedMethod", cfg.deMethod, iniPath);
+		{
+			char b[64];
+			auto f = [&](const char* k, float d) { char ds[32]; snprintf(ds, sizeof(ds), "%g", d); GetPrivateProfileStringA("DeadEye", k, ds, b, sizeof(b), iniPath); return (float)atof(b); };
+			cfg.deTimeScale = f("TimeScale", cfg.deTimeScale);
+			cfg.dePlayerSpeed = f("PlayerSpeed", cfg.dePlayerSpeed);
+			cfg.deMaxAnimSpeed = f("MaxAnimSpeed", cfg.deMaxAnimSpeed);
+			cfg.deRampSec = f("RampSec", cfg.deRampSec);
+		}
+		if (cfg.deTimeScale < 0.05f) cfg.deTimeScale = 0.05f;
+		if (cfg.deTimeScale > 1.0f) cfg.deTimeScale = 1.0f;
+		if (cfg.dePlayerSpeed < 0.1f) cfg.dePlayerSpeed = 0.1f;
+		if (cfg.deMaxAnimSpeed < 1.0f) cfg.deMaxAnimSpeed = 1.0f;
+		if (cfg.deRampSec < 0.0f) cfg.deRampSec = 0.0f;
 
 		char buf[128];
 		GetPrivateProfileStringA("KillCam", "HeadBoneIds", "1205", buf, sizeof(buf), iniPath);
@@ -352,6 +378,8 @@ namespace
 		N_SET_TIME_SCALE = 0x24D467CC,
 		N_IS_PAUSE_MENU_ACTIVE = 0x6C4568A7,
 		N_GET_GROUND_Z_FOR_3D_COORD = 0x6D902EE3,
+		N_SET_CHAR_ALL_ANIMS_SPEED = 0x5BDB7E2C,
+		N_SET_CHAR_MOVE_ANIM_SPEED_MULTIPLIER = 0x5DC456DE,
 	};
 
 	bool  NBool(uint32_t r) { return (r & 0xFF) != 0; }
@@ -665,6 +693,83 @@ namespace
 		if (StartKillCam(v)) lastTrigger = now;
 	}
 
+	// ---------------------------------------------------------------- dead eye
+	// Hold a key: SET_TIME_SCALE drops and the player's animations are sped up by
+	// playerSpeed / timeScale, so the player moves/aims/reloads at ~playerSpeed of normal speed
+	// while NPCs and physics run at timeScale.
+	struct DeadEye
+	{
+		bool   on = false;       // effect currently applied (scale != 1 or anim speed != 1)
+		bool   toggled = false;
+		bool   keyWasDown = false;
+		float  cur = 1.0f;       // current world time scale
+		double last = 0.0;
+		float  animApplied = 1.0f;
+	} de;
+
+	bool GameHasFocus()
+	{
+		DWORD pid = 0;
+		HWND w = GetForegroundWindow();
+		if (!w) return false;
+		GetWindowThreadProcessId(w, &pid);
+		return pid == GetCurrentProcessId();
+	}
+
+	void SetPlayerAnimSpeed(int player, float v)
+	{
+		if (cfg.deMethod == 1) Native(N_SET_CHAR_ALL_ANIMS_SPEED, player, v);
+		else if (cfg.deMethod == 2) Native(N_SET_CHAR_MOVE_ANIM_SPEED_MULTIPLIER, player, v);
+		de.animApplied = v;
+	}
+
+	void DeadEyeReset(int player, const char* why)
+	{
+		if (!de.on) return;
+		if (de.animApplied != 1.0f) SetPlayerAnimSpeed(player, 1.0f);
+		if (!active.on) Native(N_SET_TIME_SCALE, 1.0f); // the killcam owns the scale while it runs
+		de.on = false; de.cur = 1.0f; de.toggled = false;
+		Log("dead eye off (%s)", why);
+	}
+
+	void DeadEyeUpdate(int player)
+	{
+		if (!cfg.deadEye) return;
+		const double now = NowSec();
+		double dt = de.last > 0.0 ? now - de.last : 0.0;
+		de.last = now;
+		if (dt > 0.1) dt = 0.1;
+
+		bool down = GameHasFocus() && (GetAsyncKeyState(cfg.deKey) & 0x8000) != 0;
+		bool want;
+		if (cfg.deToggle)
+		{
+			if (down && !de.keyWasDown) de.toggled = !de.toggled;
+			want = de.toggled;
+		}
+		else want = down;
+		de.keyWasDown = down;
+
+		if (IsDead(player) || NBool(Native(N_IS_PAUSE_MENU_ACTIVE))) want = false;
+
+		const float target = want ? cfg.deTimeScale : 1.0f;
+		if (!want && !de.on) return;
+
+		if (!de.on) { de.on = true; Log("dead eye on (timescale %.2f, player speed %.2f, method %d)", cfg.deTimeScale, cfg.dePlayerSpeed, cfg.deMethod); }
+
+		// Blend the world scale toward the target (rate: full 1 -> deTimeScale span in deRampSec).
+		float span = 1.0f - cfg.deTimeScale;
+		float step = cfg.deRampSec > 0.0f ? span * (float)(dt / cfg.deRampSec) : span;
+		if (de.cur < target) de.cur = fminf(target, de.cur + step);
+		else if (de.cur > target) de.cur = fmaxf(target, de.cur - step);
+
+		if (!want && de.cur >= 0.999f) { DeadEyeReset(player, "released"); return; }
+
+		Native(N_SET_TIME_SCALE, de.cur);
+		float anim = cfg.deMethod ? fminf(cfg.deMaxAnimSpeed, fmaxf(1.0f, cfg.dePlayerSpeed / de.cur)) : 1.0f;
+		if (cfg.deMethod && fabsf(anim - de.animApplied) > 0.01f) SetPlayerAnimSpeed(player, anim);
+	}
+
 	// Diagnostics: every early exit is logged once per change of reason (not per frame).
 	int      lastBail = 0;
 	uint32_t statFrames = 0, statTicks = 0;
@@ -701,6 +806,8 @@ namespace
 		if (!player) { Bail(12, "player handle is 0"); peds.clear(); return; }
 		ClearBail();
 		statTicks++;
+
+		if (active.on) DeadEyeReset(player, "killcam started"); else DeadEyeUpdate(player);
 
 		if (active.on) UpdateKillCam(player);
 
