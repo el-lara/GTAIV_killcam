@@ -37,10 +37,11 @@ namespace
 		float explosionKillChance = 4.0f; // % chance that an explosion kill gets a (wide, distant) killcam
 		float expDistMin = 7.0f, expDistMax = 12.0f;
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
-		bool  lockAim = true;          // freeze the gameplay camera (aim) while the killcam plays
+		bool  lockAim = true;          // keep your aim from changing while the killcam plays
+		int   lockAimMethod = 3;       // bit 1 = SET_GAME_CAMERA_CONTROLS_ACTIVE, bit 2 = SET_PLAYER_CONTROL
 		std::vector<int> sniperIds = { 16, 17 }; // SNIPERRIFLE, M40A1
 		float sniperChance = 100.0f;   // % chance for kills made with a sniper weapon (replaces ChancePercent)
-		float sniperCooldownSec = 5.0f; // cooldown used for sniper kills (replaces CooldownSec)
+		float sniperCooldownSec = 7.0f; // cooldown used for sniper kills (replaces CooldownSec)
 		float sniperMaxDist = 250.0f;  // max victim distance for sniper kills
 		bool  vehicleKills = true;     // allow killcams for NPCs in cars/bikes (always from the front)
 		float vehDistMin = 4.0f, vehDistMax = 6.5f;   // meters ahead of the vehicle
@@ -125,6 +126,7 @@ namespace
 		cfg.bodyKillChance = IniFloat("BodyKillChancePercent", cfg.bodyKillChance);
 		cfg.vehicleKills = IniBool("VehicleKills", cfg.vehicleKills);
 		cfg.lockAim = IniBool("LockAimDuringKillcam", cfg.lockAim);
+		cfg.lockAimMethod = (int)GetPrivateProfileIntA("KillCam", "LockAimMethod", cfg.lockAimMethod, iniPath);
 		cfg.sniperChance = IniFloat("SniperChancePercent", cfg.sniperChance);
 		cfg.sniperCooldownSec = IniFloat("SniperCooldownSec", cfg.sniperCooldownSec);
 		if (cfg.sniperCooldownSec < 0.0f) cfg.sniperCooldownSec = 0.0f;
@@ -453,6 +455,8 @@ namespace
 		N_SET_CHAR_ALL_ANIMS_SPEED = 0x5BDB7E2C,
 		N_HAS_CHAR_BEEN_DAMAGED_BY_WEAPON = 0x6DB26E07,
 		N_SET_GAME_CAMERA_CONTROLS_ACTIVE = 0x57952546,
+		N_SET_PLAYER_CONTROL = 0x1A6203EA,
+		N_IS_PLAYER_CONTROL_ON = 0x30CD2F1F,
 		N_GET_CAR_CHAR_IS_USING = 0x1B067237,
 		N_GET_CAR_COORDINATES = 0x2D432EAB,
 		N_GET_CAR_FORWARD_X = 0x47A21100,
@@ -585,6 +589,7 @@ namespace
 		Vec3   victim = {};
 		// Vehicle shot: camera stays in front of the vehicle and follows it.
 		bool   aimLocked = false;   // gameplay camera controls currently disabled by us
+		bool   ctrlLocked = false;  // player control currently switched off by us
 		bool   follow = false;
 		int    car = 0, ped = 0;
 		float  fwdX = 0, fwdY = 1;  // smoothed forward direction of the vehicle
@@ -607,6 +612,13 @@ namespace
 		Native(N_DESTROY_CAM, active.cam);
 		Native(N_SET_TIME_SCALE, 1.0f);
 		if (active.aimLocked) { Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, true); active.aimLocked = false; }
+		if (active.ctrlLocked)
+		{
+			int pid = (int)Native(N_GET_PLAYER_ID);
+			Native(N_SET_PLAYER_CONTROL, pid, true);
+			Log("aim lock released: player control on = %d", (int)NBool(Native(N_IS_PLAYER_CONTROL_ON, pid)));
+			active.ctrlLocked = false;
+		}
 		active.on = false; active.follow = false;
 		Log("killcam end (%s), %.2fs real", why, NowSec() - active.startTime);
 	}
@@ -671,7 +683,14 @@ namespace
 		Native(N_SET_CAM_PROPAGATE, cam, true);
 		Native(N_ACTIVATE_SCRIPTED_CAMS, true, true);
 		Native(N_SET_TIME_SCALE, ts);
-		if (cfg.lockAim) { Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, false); active.aimLocked = true; }
+		if (cfg.lockAim)
+		{
+			int pid = (int)Native(N_GET_PLAYER_ID);
+			bool before = NBool(Native(N_IS_PLAYER_CONTROL_ON, pid));
+			if (cfg.lockAimMethod & 1) { Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, false); active.aimLocked = true; }
+			if ((cfg.lockAimMethod & 2) && before) { Native(N_SET_PLAYER_CONTROL, pid, false); active.ctrlLocked = true; }
+			Log("aim lock (method %d): player control before=%d after=%d", cfg.lockAimMethod, (int)before, (int)NBool(Native(N_IS_PLAYER_CONTROL_ON, pid)));
+		}
 		active.on = true;
 		active.startTime = active.lastTick = NowSec();
 		return true;

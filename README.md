@@ -38,10 +38,12 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
   Detected with `HAS_CHAR_BEEN_DAMAGED_BY_WEAPON` for weapon ids 4, 5, 6, 18, 51; unverified in-game, see the
   `explosion=` field of the `player kill:` log line.
 - Sniper weapons (`SniperWeaponIds`, default 16/17): headshot or one-shot kills use `SniperChancePercent` (100) and
-  `SniperCooldownSec` (5) instead of `ChancePercent` and `CooldownSec` and may be up to `SniperMaxDistance` away. Far kills may be filmed where the
+  `SniperCooldownSec` (7) instead of `ChancePercent` and `CooldownSec` and may be up to `SniperMaxDistance` away. Far kills may be filmed where the
   world is not fully streamed in; unverified.
-- `LockAimDuringKillcam` disables the gameplay camera controls (`SET_GAME_CAMERA_CONTROLS_ACTIVE`) while the
-  killcam runs and re-enables them when it ends. Unverified in-game.
+- `LockAimDuringKillcam`/`LockAimMethod`: while the killcam runs, the gameplay camera controls
+  (`SET_GAME_CAMERA_CONTROLS_ACTIVE`, method 1) and/or the player control (`SET_PLAYER_CONTROL`, method 2) are
+  switched off and restored when it ends. Method 1 alone did not work for the author; unverified otherwise. The
+  log line `aim lock (method N): player control before=.. after=..` shows whether the native took effect.
 - Headshot kills refill the Dead Eye meter by `HeadshotRefill` (default 15%).
 - NPCs in cars/bikes qualify too (`VehicleKills`): camera always in front of the vehicle, looking back at the
   victim and following the vehicle (heading is smoothed). No other angles; if the front spot is blocked, skipped.
