@@ -38,7 +38,8 @@ namespace
 		float expDistMin = 7.0f, expDistMax = 12.0f;
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
 		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
-		float afterTimeScale = 0.0f;   // its time scale; 0 = use the Dead Eye time scale
+		float afterTimeScale = 0.0f;   // its time scale; 0 = the time scale of the killcam that just played
+		float kcPlayerSpeed = 0.5f;    // player animation speed multiplier during the killcam and its slow tail (1 = off)
 		bool  lockAim = true;          // keep your aim from changing while the killcam plays
 		int   lockAimMethod = 1;       // bit 1 = SET_GAME_CAMERA_CONTROLS_ACTIVE, bit 2 = SET_PLAYER_CONTROL
 		std::vector<int> sniperIds = { 16, 17 }; // SNIPERRIFLE, M40A1
@@ -129,6 +130,9 @@ namespace
 		cfg.vehicleKills = IniBool("VehicleKills", cfg.vehicleKills);
 		cfg.afterSlowSec = IniFloat("AfterSlowSec", cfg.afterSlowSec);
 		cfg.afterTimeScale = IniFloat("AfterTimeScale", cfg.afterTimeScale);
+		cfg.kcPlayerSpeed = IniFloat("PlayerSpeedDuringKillcam", cfg.kcPlayerSpeed);
+		if (cfg.kcPlayerSpeed < 0.05f) cfg.kcPlayerSpeed = 0.05f;
+		if (cfg.kcPlayerSpeed > 1.0f) cfg.kcPlayerSpeed = 1.0f;
 		if (cfg.afterSlowSec < 0.0f) cfg.afterSlowSec = 0.0f;
 		if (cfg.afterTimeScale < 0.0f) cfg.afterTimeScale = 0.0f;
 		if (cfg.afterTimeScale > 1.0f) cfg.afterTimeScale = 1.0f;
@@ -593,6 +597,8 @@ namespace
 		double releasedAt = 0.0;  // when the effect last stopped (real time)
 	} de;
 	double tailUntil = 0.0; // slow-motion tail after a killcam ends (real time)
+	float  tailScale = 0.25f; // time scale of that tail
+	void SetPlayerAnimSpeed(int player, float v);
 
 	struct Active
 	{
@@ -609,6 +615,7 @@ namespace
 		float  dolly = 0.0f;        // fraction of baseRadius added over the shot (negative = push in)
 		Vec3   victim = {};
 		// Vehicle shot: camera stays in front of the vehicle and follows it.
+		float  ts = 0.25f;          // time scale of this killcam
 		bool   aimLocked = false;   // gameplay camera controls currently disabled by us
 		bool   ctrlLocked = false;  // player control currently switched off by us
 		bool   follow = false;
@@ -634,12 +641,17 @@ namespace
 		if (cfg.afterSlowSec > 0.0f && !strcmp(why, "duration"))
 		{
 			// Camera is back on the player: stay in slow motion for a moment so there is time to aim.
-			float ts = cfg.afterTimeScale > 0.0f ? cfg.afterTimeScale : cfg.deTimeScale;
+			float ts = cfg.afterTimeScale > 0.0f ? cfg.afterTimeScale : active.ts;
 			Native(N_SET_TIME_SCALE, ts);
+			tailScale = ts;
 			de.cur = ts; de.on = true; de.toggled = false;
 			tailUntil = NowSec() + cfg.afterSlowSec;
 		}
-		else Native(N_SET_TIME_SCALE, 1.0f);
+		else
+		{
+			Native(N_SET_TIME_SCALE, 1.0f);
+			if (de.animApplied != 1.0f) SetPlayerAnimSpeed(PlayerPed(), 1.0f);
+		}
 		if (active.aimLocked) { Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, true); active.aimLocked = false; }
 		if (active.ctrlLocked)
 		{
@@ -712,6 +724,7 @@ namespace
 		Native(N_SET_CAM_PROPAGATE, cam, true);
 		Native(N_ACTIVATE_SCRIPTED_CAMS, true, true);
 		Native(N_SET_TIME_SCALE, ts);
+		active.ts = ts;
 		if (cfg.lockAim)
 		{
 			int pid = (int)Native(N_GET_PLAYER_ID);
@@ -1064,7 +1077,6 @@ namespace
 
 		const bool tailOnly = tail && !want && !blocked; // slow motion after a killcam, no key held, no energy used
 		if (tailOnly) want = true;
-		const float tailScale = cfg.afterTimeScale > 0.0f ? cfg.afterTimeScale : cfg.deTimeScale;
 		const float target = want ? (tailOnly ? tailScale : cfg.deTimeScale) : 1.0f;
 		if (!want && !de.on) return;
 
@@ -1080,7 +1092,8 @@ namespace
 		if (!want) de.releasedAt = now; // keep the recharge delay counting from the end of the blend-out
 
 		Native(N_SET_TIME_SCALE, de.cur);
-		float anim = cfg.deMethod ? fminf(cfg.deMaxAnimSpeed, fmaxf(1.0f, cfg.dePlayerSpeed / de.cur)) : 1.0f;
+		// Dead Eye boosts the player; the slow tail after a killcam keeps the player slow instead.
+		float anim = cfg.deMethod ? (tailOnly ? cfg.kcPlayerSpeed : fminf(cfg.deMaxAnimSpeed, fmaxf(1.0f, cfg.dePlayerSpeed / de.cur))) : 1.0f;
 		if (cfg.deMethod && fabsf(anim - de.animApplied) > 0.01f) SetPlayerAnimSpeed(player, anim);
 	}
 
@@ -1121,7 +1134,12 @@ namespace
 		ClearBail();
 		statTicks++;
 
-		if (active.on) DeadEyeReset(player, "killcam started");
+		if (active.on)
+		{
+			DeadEyeReset(player, "killcam started");
+			if (cfg.deMethod && cfg.kcPlayerSpeed < 0.999f && fabsf(de.animApplied - cfg.kcPlayerSpeed) > 0.01f)
+				SetPlayerAnimSpeed(player, cfg.kcPlayerSpeed); // player stays slow while the killcam camera plays
+		}
 		DeadEyeUpdate(player, active.on);
 
 		if (active.on) UpdateKillCam(player);
