@@ -3,4 +3,4 @@ build/obj/
 *.log
 *.user
 .vs/
-third_party/
+
