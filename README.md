@@ -37,8 +37,8 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
 - Explosion kills (`ExplosionKillChancePercent`, default 4): filmed from 7-12 m, eye level or high angle.
   Detected with `HAS_CHAR_BEEN_DAMAGED_BY_WEAPON` for weapon ids 4, 5, 6, 18, 51; unverified in-game, see the
   `explosion=` field of the `player kill:` log line.
-- Sniper weapons (`SniperWeaponIds`, default 16/17): headshot or one-shot kills use `SniperChancePercent` (25)
-  instead of `ChancePercent` and may be up to `SniperMaxDistance` away. Far kills may be filmed where the
+- Sniper weapons (`SniperWeaponIds`, default 16/17): headshot or one-shot kills use `SniperChancePercent` (100) and
+  `SniperCooldownSec` (5) instead of `ChancePercent` and `CooldownSec` and may be up to `SniperMaxDistance` away. Far kills may be filmed where the
   world is not fully streamed in; unverified.
 - `LockAimDuringKillcam` disables the gameplay camera controls (`SET_GAME_CAMERA_CONTROLS_ACTIVE`) while the
   killcam runs and re-enables them when it ends. Unverified in-game.

@@ -39,7 +39,8 @@ namespace
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
 		bool  lockAim = true;          // freeze the gameplay camera (aim) while the killcam plays
 		std::vector<int> sniperIds = { 16, 17 }; // SNIPERRIFLE, M40A1
-		float sniperChance = 25.0f;    // % chance for kills made with a sniper weapon (replaces ChancePercent)
+		float sniperChance = 100.0f;   // % chance for kills made with a sniper weapon (replaces ChancePercent)
+		float sniperCooldownSec = 5.0f; // cooldown used for sniper kills (replaces CooldownSec)
 		float sniperMaxDist = 250.0f;  // max victim distance for sniper kills
 		bool  vehicleKills = true;     // allow killcams for NPCs in cars/bikes (always from the front)
 		float vehDistMin = 4.0f, vehDistMax = 6.5f;   // meters ahead of the vehicle
@@ -125,6 +126,8 @@ namespace
 		cfg.vehicleKills = IniBool("VehicleKills", cfg.vehicleKills);
 		cfg.lockAim = IniBool("LockAimDuringKillcam", cfg.lockAim);
 		cfg.sniperChance = IniFloat("SniperChancePercent", cfg.sniperChance);
+		cfg.sniperCooldownSec = IniFloat("SniperCooldownSec", cfg.sniperCooldownSec);
+		if (cfg.sniperCooldownSec < 0.0f) cfg.sniperCooldownSec = 0.0f;
 		cfg.sniperMaxDist = IniFloat("SniperMaxDistance", cfg.sniperMaxDist);
 		{
 			char sb[128];
@@ -892,8 +895,9 @@ namespace
 
 		const double now = NowSec();
 		if (active.on) { Log("skipped: killcam already active"); return; }
-		if (now - lastTrigger < cfg.cooldownSec) { Log("skipped: cooldown (%.1fs left)", cfg.cooldownSec - (now - lastTrigger)); return; }
 		const bool sniper = (headshot || oneShot) && IsSniperWeapon(weapon);
+		const float cooldown = sniper ? cfg.sniperCooldownSec : cfg.cooldownSec;
+		if (now - lastTrigger < cooldown) { Log("skipped: cooldown (%.1fs left%s)", cooldown - (now - lastTrigger), sniper ? ", sniper" : ""); return; }
 		const float chance = sniper ? cfg.sniperChance : cfg.chance;
 		if (Rand01() * 100.0f >= chance) { Log("skipped: chance roll (%.0f%%%s)", chance, sniper ? ", sniper" : ""); return; }
 
