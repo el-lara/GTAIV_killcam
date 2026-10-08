@@ -41,7 +41,7 @@ namespace
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
 		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
 		float afterTimeScale = 0.0f;   // its time scale; 0 = the time scale of the killcam that just played
-		bool  restoreAim = true;       // after the killcam, put the gameplay camera back to the heading you had (experimental)
+		int   restoreAimMode = 0;      // after the killcam: 0 = leave the camera, 1 = SET_GAME_CAM_HEADING(saved heading), 2 = SET_GAME_CAM_HEADING(0)
 		bool  holdHeading = true;      // keep the player's heading fixed during the killcam and its tail (stops the character turning)
 		float chainPercent = 25.0f;    // % of qualifying kills that do NOT trigger but arm the next one
 		float chainWindowSec = 8.0f;   // the next qualifying kill within this many seconds triggers for sure
@@ -81,6 +81,7 @@ namespace
 		float dePlayerSpeed = 0.85f;   // player speed relative to normal time (1 = unaffected)
 		float deMaxAnimSpeed = 4.0f;   // cap for the player's animation speed multiplier
 		float deRampSec = 0.15f;       // real seconds to blend in/out
+		float deActivationCost = 0.10f; // fraction of a full meter spent each time Dead Eye is switched on
 		float deMaxSec = 10.0f;        // seconds of Dead Eye on a full meter
 		float deRechargeDelaySec = 1.0f; // after releasing, wait this long before recharging
 		float deRechargeSec = 20.0f;   // seconds to refill an empty meter
@@ -148,7 +149,7 @@ namespace
 		cfg.afterSlowSec = IniFloat("AfterSlowSec", cfg.afterSlowSec);
 		cfg.afterTimeScale = IniFloat("AfterTimeScale", cfg.afterTimeScale);
 		cfg.kcPlayerSpeed = IniFloat("PlayerSpeedDuringKillcam", cfg.kcPlayerSpeed);
-		cfg.restoreAim = IniBool("RestoreAimHeading", cfg.restoreAim);
+		cfg.restoreAimMode = (int)GetPrivateProfileIntA("KillCam", "RestoreAimHeading", 0, iniPath);
 		cfg.holdHeading = IniBool("HoldPlayerHeading", cfg.holdHeading);
 		cfg.chainPercent = IniFloat("ArmNextKillChancePercent", cfg.chainPercent);
 		cfg.chainWindowSec = IniFloat("ArmNextKillWindowSec", cfg.chainWindowSec);
@@ -224,6 +225,7 @@ namespace
 			cfg.deMaxAnimSpeed = f("MaxAnimSpeed", cfg.deMaxAnimSpeed);
 			cfg.deRampSec = f("RampSec", cfg.deRampSec);
 			cfg.deMaxSec = f("MaxSeconds", cfg.deMaxSec);
+			cfg.deActivationCost = f("ActivationCost", cfg.deActivationCost);
 			cfg.deRechargeDelaySec = f("RechargeDelaySec", cfg.deRechargeDelaySec);
 			cfg.deRechargeSec = f("RechargeSeconds", cfg.deRechargeSec);
 			cfg.deMinToStart = f("MinToStart", cfg.deMinToStart);
@@ -242,6 +244,8 @@ namespace
 		if (cfg.deMaxAnimSpeed < 1.0f) cfg.deMaxAnimSpeed = 1.0f;
 		if (cfg.deRampSec < 0.0f) cfg.deRampSec = 0.0f;
 		if (cfg.deMaxSec < 0.5f) cfg.deMaxSec = 0.5f;
+		if (cfg.deActivationCost < 0.0f) cfg.deActivationCost = 0.0f;
+		if (cfg.deActivationCost > 1.0f) cfg.deActivationCost = 1.0f;
 		if (cfg.deRechargeDelaySec < 0.0f) cfg.deRechargeDelaySec = 0.0f;
 		if (cfg.deRechargeSec < 0.5f) cfg.deRechargeSec = 0.5f;
 		if (cfg.deMinToStart < 0.0f) cfg.deMinToStart = 0.0f;
@@ -631,6 +635,7 @@ namespace
 		bool   on = false;       // effect currently applied (scale != 1 or anim speed != 1)
 		bool   toggled = false;
 		bool   keyWasDown = false;
+		bool   userWanted = false; // the player-driven Dead Eye was on during the previous frame
 		float  cur = 1.0f;       // current world time scale
 		double last = 0.0;
 		float  animApplied = 1.0f;
@@ -693,7 +698,8 @@ namespace
 		Native(N_GET_GAME_CAM, &gc);
 		if (gc) Native(N_GET_CAM_ROT, gc, &r[0], &r[1], &r[2]);
 		Log("aim lock released (%s): game cam rot %.1f %.1f %.1f -> %.1f %.1f %.1f", why, camRot0[0], camRot0[1], camRot0[2], r[0], r[1], r[2]);
-		if (cfg.restoreAim) Native(N_SET_GAME_CAM_HEADING, savedHeading);
+		if (cfg.restoreAimMode == 1) Native(N_SET_GAME_CAM_HEADING, savedHeading);
+		else if (cfg.restoreAimMode == 2) Native(N_SET_GAME_CAM_HEADING, 0.0f);
 	}
 
 	void StopKillCam(const char* why)
@@ -1195,6 +1201,19 @@ namespace
 		if (de.lockedOut && de.energy >= cfg.deMinToStart) { de.lockedOut = false; Log("dead eye ready again"); }
 		if (de.lockedOut) want = false;
 		if (want && de.energy <= 0.0f) want = false;
+
+		// Switching it on costs a bit of energy, so spamming the key drains the meter quickly.
+		if (want && !de.userWanted && cfg.deActivationCost > 0.0f)
+		{
+			de.energy -= cfg.deActivationCost;
+			if (de.energy <= 0.0f)
+			{
+				de.energy = 0.0f; de.lockedOut = true; want = false;
+				Log("dead eye ran dry on activation");
+			}
+			else Log("dead eye activation cost -%.0f%% -> %.0f%%", cfg.deActivationCost * 100.0f, de.energy * 100.0f);
+		}
+		de.userWanted = want;
 
 		if (want)
 		{

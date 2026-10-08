@@ -49,8 +49,9 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
   player's animations run at `PlayerSpeedDuringKillcam` (0.5) so you barely move/turn. Unverified in-game.
 - The aim lock (`SET_GAME_CAMERA_CONTROLS_ACTIVE`) now also covers the slow tail. The log line `aim lock released`
   prints the gameplay camera rotation before and after: if they differ, the lock did not hold. `HoldPlayerHeading` (default on) re-applies the player's heading every frame during the killcam and its tail so the
-  character cannot turn, and `RestoreAimHeading` (default on) sets the gameplay camera heading back to the saved one
-  when the lock ends (experimental: the angle convention of `SET_GAME_CAM_HEADING` is unverified).
+  character cannot turn, and `RestoreAimHeading` (default 0 = off) can turn the gameplay camera when the lock ends (1 = saved heading,
+  2 = heading 0). With 1 the aim spun at the end in testing, so it is off.
+- Dead Eye costs `ActivationCost` (10% of the meter) every time it is switched on.
 - Cooldown: `CooldownSec` 30, but after `ShortCooldownChancePercent` (45) of killcams it is `ShortCooldownSec` (15);
   chosen when each killcam starts and logged as `next cooldown`. Sniper kills keep `SniperCooldownSec`.
 - Not every qualifying kill triggers: `ArmNextKillChancePercent` (25) makes a kill only arm the next one, and the
