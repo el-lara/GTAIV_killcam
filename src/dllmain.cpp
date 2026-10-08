@@ -42,8 +42,8 @@ namespace
 		float headshotRefill = 0.20f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
 		float killRefill = 0.075f;     // ... and per any other kill you make
 		float healthKillActive = 8.0f;      // health points restored per kill while Dead Eye is active (0 = off)
-		float healthHeadshotActive = 15.0f; // ... and per headshot kill
-		float headshotRefillActive = 0.075f; // same as headshotRefill but while Dead Eye is active
+		float healthHeadshotActive = 25.0f; // ... and per headshot kill
+		float headshotRefillActive = 0.15f;  // same as headshotRefill but while Dead Eye is active
 		float killRefillActive = 0.04f;     // same as killRefill but while Dead Eye is active
 		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
 		float afterTimeScale = 0.0f;   // its time scale; 0 = the time scale of the killcam that just played
