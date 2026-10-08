@@ -33,11 +33,16 @@ namespace
 		bool  onHeadshot = true;
 		bool  onOneShot = true;
 		std::vector<int> headBones = { 0x4B5 }; // BONE_HEAD
-		float camRadius = 3.0f;
-		float camHeight = 0.6f;        // camera height above the victim position
-		float targetHeight = 0.3f;     // look-at height above the victim position
+		// Shot variation (picked at random for every killcam)
+		bool  varyTimeScale = true;
+		float timeScaleMin = 0.15f, timeScaleMax = 0.40f;
+		float radiusMin = 2.5f, radiusMax = 4.5f;
+		float orbitSpeedMin = 10.0f, orbitSpeedMax = 35.0f; // deg/s, direction is random
+		float dollyAmount = 0.30f;                          // radius change over the shot (fraction)
+		float wStatic = 60, wOrbit = 30, wDolly = 10;       // movement weights
+		float wEye = 45, wHigh = 30, wLow = 25;             // camera angle weights
+		float highMin = 2.2f, highMax = 4.0f;               // height above victim for high angle
 		float fov = 45.0f;
-		float orbitDegPerSec = 25.0f;  // 0 = static camera
 		float maxVictimDist = 60.0f;
 		bool  logEnabled = true;
 		char  raycastPattern[256] = "";
@@ -88,11 +93,23 @@ namespace
 		cfg.timeScale = IniFloat("TimeScale", cfg.timeScale);
 		cfg.onHeadshot = IniBool("TriggerOnHeadshot", cfg.onHeadshot);
 		cfg.onOneShot = IniBool("TriggerOnOneShot", cfg.onOneShot);
-		cfg.camRadius = IniFloat("CamRadius", cfg.camRadius);
-		cfg.camHeight = IniFloat("CamHeight", cfg.camHeight);
-		cfg.targetHeight = IniFloat("TargetHeight", cfg.targetHeight);
+		cfg.varyTimeScale = IniBool("VaryTimeScale", cfg.varyTimeScale);
+		cfg.timeScaleMin = IniFloat("TimeScaleMin", cfg.timeScaleMin);
+		cfg.timeScaleMax = IniFloat("TimeScaleMax", cfg.timeScaleMax);
+		cfg.radiusMin = IniFloat("RadiusMin", cfg.radiusMin);
+		cfg.radiusMax = IniFloat("RadiusMax", cfg.radiusMax);
+		cfg.orbitSpeedMin = IniFloat("OrbitSpeedMin", cfg.orbitSpeedMin);
+		cfg.orbitSpeedMax = IniFloat("OrbitSpeedMax", cfg.orbitSpeedMax);
+		cfg.dollyAmount = IniFloat("DollyAmount", cfg.dollyAmount);
+		cfg.wStatic = IniFloat("WeightStatic", cfg.wStatic);
+		cfg.wOrbit = IniFloat("WeightOrbit", cfg.wOrbit);
+		cfg.wDolly = IniFloat("WeightDolly", cfg.wDolly);
+		cfg.wEye = IniFloat("WeightEyeLevel", cfg.wEye);
+		cfg.wHigh = IniFloat("WeightHighAngle", cfg.wHigh);
+		cfg.wLow = IniFloat("WeightLowAngle", cfg.wLow);
+		cfg.highMin = IniFloat("HighAngleHeightMin", cfg.highMin);
+		cfg.highMax = IniFloat("HighAngleHeightMax", cfg.highMax);
 		cfg.fov = IniFloat("CamFov", cfg.fov);
-		cfg.orbitDegPerSec = IniFloat("OrbitDegPerSec", cfg.orbitDegPerSec);
 		cfg.maxVictimDist = IniFloat("MaxVictimDistance", cfg.maxVictimDist);
 		cfg.logEnabled = IniBool("Log", cfg.logEnabled);
 
@@ -113,7 +130,13 @@ namespace
 		if (cfg.durationSec < 0.1f) cfg.durationSec = 0.1f;
 		if (cfg.timeScale < 0.05f) cfg.timeScale = 0.05f;
 		if (cfg.timeScale > 1.0f) cfg.timeScale = 1.0f;
-		if (cfg.camRadius < 0.8f) cfg.camRadius = 0.8f;
+		if (cfg.timeScaleMin < 0.05f) cfg.timeScaleMin = 0.05f;
+		if (cfg.timeScaleMax < cfg.timeScaleMin) cfg.timeScaleMax = cfg.timeScaleMin;
+		if (cfg.timeScaleMax > 1.0f) cfg.timeScaleMax = 1.0f;
+		if (cfg.radiusMin < 0.8f) cfg.radiusMin = 0.8f;
+		if (cfg.radiusMax < cfg.radiusMin) cfg.radiusMax = cfg.radiusMin;
+		if (cfg.orbitSpeedMax < cfg.orbitSpeedMin) cfg.orbitSpeedMax = cfg.orbitSpeedMin;
+		if (cfg.highMax < cfg.highMin) cfg.highMax = cfg.highMin;
 	}
 
 	// ------------------------------------------------------------ pattern scan
@@ -437,7 +460,12 @@ namespace
 		double startTime = 0.0;
 		double lastTick = 0.0;
 		float  angle = 0.0f;
-		float  radius = 0.0f;
+		float  radius = 0.0f;       // current radius
+		float  baseRadius = 0.0f;
+		float  height = 0.6f;       // camera height above the victim position
+		float  targetH = 0.3f;      // look-at height above the victim position
+		float  orbit = 0.0f;        // rad/s, signed; 0 = fixed
+		float  dolly = 0.0f;        // fraction of baseRadius added over the shot (negative = push in)
 		Vec3   victim = {};
 	} active;
 	double lastTrigger = -1e9;
@@ -445,7 +473,7 @@ namespace
 	Vec3 CamPos(float angle, float radius)
 	{
 		return { active.victim.x + cosf(angle) * radius, active.victim.y + sinf(angle) * radius,
-		         active.victim.z + cfg.camHeight };
+		         active.victim.z + active.height };
 	}
 
 	void StopKillCam(const char* why)
@@ -460,25 +488,84 @@ namespace
 		Log("killcam end (%s), %.2fs real", why, NowSec() - active.startTime);
 	}
 
-	bool StartKillCam(const Vec3& v)
-	{
-		const Vec3 target = { v.x, v.y, v.z + cfg.targetHeight };
-		active.victim = v;
-		const float base = Rand01() * 6.2831853f;
-		const float radii[3] = { cfg.camRadius, cfg.camRadius * 0.7f, cfg.camRadius * 0.5f };
+	float RandRange(float lo, float hi) { return lo + (hi - lo) * Rand01(); }
 
-		bool found = false;
-		float fa = 0, fr = 0;
-		for (float r : radii)
+	// Weighted pick among n weights; falls back to index 0 if all are <= 0.
+	int PickWeighted(const float* w, int n)
+	{
+		float total = 0;
+		for (int i = 0; i < n; i++) if (w[i] > 0) total += w[i];
+		if (total <= 0) return 0;
+		float r = Rand01() * total;
+		for (int i = 0; i < n; i++)
 		{
-			for (int i = 0; i < 12 && !found; i++)
+			if (w[i] <= 0) continue;
+			if (r < w[i]) return i;
+			r -= w[i];
+		}
+		return n - 1;
+	}
+
+	enum { ANGLE_EYE, ANGLE_HIGH, ANGLE_LOW };
+	enum { MOVE_STATIC, MOVE_ORBIT, MOVE_DOLLY };
+	const char* angleName[] = { "eye", "high", "low" };
+	const char* moveName[] = { "static", "orbit", "dolly" };
+
+	void SetAngle(int angle)
+	{
+		switch (angle)
+		{
+		case ANGLE_HIGH: active.height = RandRange(cfg.highMin, cfg.highMax); active.targetH = 0.0f; break;
+		case ANGLE_LOW:  active.height = -0.4f; active.targetH = 0.5f; break; // near the ground, looking slightly up
+		default:         active.height = 0.6f;  active.targetH = 0.3f; break;
+		}
+	}
+
+	bool FindSpot(float& outAngle, float& outRadius)
+	{
+		const Vec3 target = { active.victim.x, active.victim.y, active.victim.z + active.targetH };
+		const float base = Rand01() * 6.2831853f;
+		const float radii[3] = { active.baseRadius, active.baseRadius * 0.75f, active.baseRadius * 0.55f };
+		for (float r : radii)
+			for (int i = 0; i < 12; i++)
 			{
 				float a = base + i * (6.2831853f / 12.0f);
-				if (CameraSpotOk(CamPos(a, r), target)) { found = true; fa = a; fr = r; }
+				if (CameraSpotOk(CamPos(a, r), target)) { outAngle = a; outRadius = r; return true; }
 			}
-			if (found) break;
+		return false;
+	}
+
+	bool StartKillCam(const Vec3& v)
+	{
+		active.victim = v;
+
+		// Random shot: movement (mostly fixed) x camera angle.
+		const float mw[3] = { cfg.wStatic, cfg.wOrbit, cfg.wDolly };
+		const float aw[3] = { cfg.wEye, cfg.wHigh, cfg.wLow };
+		int move = PickWeighted(mw, 3), angle = PickWeighted(aw, 3);
+
+		active.baseRadius = RandRange(cfg.radiusMin, cfg.radiusMax);
+		if (angle == ANGLE_HIGH && active.baseRadius < 3.0f) active.baseRadius = 3.0f;
+		active.orbit = 0; active.dolly = 0;
+		if (move == MOVE_ORBIT)
+			active.orbit = (Rand01() < 0.5f ? -1.0f : 1.0f) * RandRange(cfg.orbitSpeedMin, cfg.orbitSpeedMax) * 0.0174533f;
+		else if (move == MOVE_DOLLY)
+			active.dolly = (Rand01() < 0.5f ? -1.0f : 1.0f) * cfg.dollyAmount;
+
+		SetAngle(angle);
+		float fa = 0, fr = 0;
+		if (!FindSpot(fa, fr) && angle != ANGLE_EYE)
+		{
+			Log("shot %s/%s blocked, retrying at eye level", moveName[move], angleName[angle]);
+			angle = ANGLE_EYE;
+			SetAngle(angle);
+			if (!FindSpot(fa, fr))
+			{
+				Log("skipped: no camera position with clear line of sight around (%.1f %.1f %.1f)", v.x, v.y, v.z);
+				return false;
+			}
 		}
-		if (!found)
+		else if (fr == 0)
 		{
 			Log("skipped: no camera position with clear line of sight around (%.1f %.1f %.1f)", v.x, v.y, v.z);
 			return false;
@@ -486,7 +573,10 @@ namespace
 
 		active.angle = fa;
 		active.radius = fr;
+		active.baseRadius = fr; // radius changes are relative to the spot that was accepted
 		Vec3 p = CamPos(fa, fr);
+		const Vec3 target = { v.x, v.y, v.z + active.targetH };
+		const float ts = cfg.varyTimeScale ? RandRange(cfg.timeScaleMin, cfg.timeScaleMax) : cfg.timeScale;
 
 		int cam = 0;
 		Native(N_CREATE_CAM, 14, &cam);
@@ -498,12 +588,12 @@ namespace
 		Native(N_SET_CAM_ACTIVE, cam, true);
 		Native(N_SET_CAM_PROPAGATE, cam, true);
 		Native(N_ACTIVATE_SCRIPTED_CAMS, true, true);
-		Native(N_SET_TIME_SCALE, cfg.timeScale);
+		Native(N_SET_TIME_SCALE, ts);
 
 		active.on = true;
 		active.startTime = active.lastTick = NowSec();
-		Log("killcam start: victim (%.1f %.1f %.1f) angle %.0fdeg radius %.1f", v.x, v.y, v.z,
-			fa * 57.29578f, fr);
+		Log("killcam start: %s/%s timescale %.2f height %.1f radius %.1f orbit %.0fdeg/s dolly %+.2f victim (%.1f %.1f %.1f)",
+			moveName[move], angleName[angle], ts, active.height, fr, active.orbit * 57.29578f, active.dolly, v.x, v.y, v.z);
 		return true;
 	}
 
@@ -514,17 +604,20 @@ namespace
 		if (IsDead(player)) { StopKillCam("player dead"); return; }
 		if (NBool(Native(N_IS_PAUSE_MENU_ACTIVE))) { StopKillCam("pause menu"); return; }
 
-		if (cfg.orbitDegPerSec != 0.0f)
+		if (active.orbit != 0.0f || active.dolly != 0.0f)
 		{
 			double dt = now - active.lastTick;
 			if (dt > 0.1) dt = 0.1;
 			active.lastTick = now;
-			float na = active.angle + cfg.orbitDegPerSec * 0.0174533f * (float)dt;
-			Vec3 p = CamPos(na, active.radius);
-			Vec3 target = { active.victim.x, active.victim.y, active.victim.z + cfg.targetHeight };
+			float t = (float)((now - active.startTime) / cfg.durationSec);
+			float na = active.angle + active.orbit * (float)dt;
+			float nr = active.baseRadius * (1.0f + active.dolly * t);
+			Vec3 p = CamPos(na, nr);
+			Vec3 target = { active.victim.x, active.victim.y, active.victim.z + active.targetH };
 			if (CameraSpotOk(p, target))
 			{
 				active.angle = na;
+				active.radius = nr;
 				Native(N_SET_CAM_POS, active.cam, p.x, p.y, p.z);
 			}
 		}
@@ -796,7 +889,7 @@ namespace
 		Log("---- GTAIV KillCam loaded ----");
 		LogExeVersion();
 		Log("config: chance=%.0f%% cooldown=%.1fs duration=%.1fs timescale=%.2f headshot=%d oneShot=%d",
-			cfg.chance, cfg.cooldownSec, cfg.durationSec, cfg.timeScale, (int)cfg.onHeadshot, (int)cfg.onOneShot);
+			cfg.chance, cfg.cooldownSec, cfg.durationSec, cfg.timeScaleMax, (int)cfg.onHeadshot, (int)cfg.onOneShot);
 		if (!cfg.enabled) return 0;
 
 		// The exe may still be unpacking/initializing when the loader runs us: retry for a while.

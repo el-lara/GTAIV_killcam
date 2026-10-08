@@ -34,8 +34,11 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
 - Headshot = `GET_CHAR_LAST_DAMAGE_BONE` in `HeadBoneIds` (default 0x4B5 = 1205).
 - One shot = victim's health never dropped before the lethal frame and the player held a firearm.
 - Needs (headshot or one shot) + not on cooldown + chance roll + victim within range.
-- Camera: 12 angles x 3 radii are tested for line of sight; none clear -> killcam skipped.
-  While running it orbits and only moves to positions that pass the same check.
+- Each killcam picks a random shot: movement (fixed 60 / orbit 30 / dolly 10, random orbit
+  direction and speed) x angle (eye level / high angle / low angle looking up) and a random
+  slow-motion scale. All weights and ranges are in the .ini. The log line `killcam start:` shows what was picked.
+- Camera: 12 angles x 3 radii are tested for line of sight; a blocked high/low shot falls back to
+  eye level; none clear -> killcam skipped. Moving shots only move to positions that pass the same check.
 - Duration and cooldown use real time. Ends early if the player dies or the pause menu opens.
 
 ## Diagnosing with the log
