@@ -59,9 +59,9 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
 - Cinematic killcams (`CinematicChancePercent` 15, 50 when armed): time scale 0.03-0.07 for 3.2 s, the victim for
   55% of it, then a cut to the shooter in a random style: 3/4 front, gun pointed at the camera, low hero, over the shoulder,
   profile, high angle or gun close-up (weights in the .ini), sometimes with a slow push-in. Unverified in-game.
-- Kills refill the Dead Eye meter by `KillRefill` (default 5%); headshot kills refill `HeadshotRefill` (15%) instead. While Dead Eye is active: `KillRefillWhileActive` 2.5%,
-  `HeadshotRefillWhileActive` 5%. Kills while Dead Eye is active also restore health
-  (`HealthOnKillWhileActive` 5 points, `HealthOnHeadshotWhileActive` 10; scale unverified, see the log).
+- Kills refill the Dead Eye meter by `KillRefill` (default 7.5%); headshot kills refill `HeadshotRefill` (20%) instead. While Dead Eye is active: `KillRefillWhileActive` 4%,
+  `HeadshotRefillWhileActive` 7.5%. Killcam chances are multiplied by `KillcamChanceMultiplier` (0.7) while Dead Eye is active. Kills while Dead Eye is active also restore health
+  (`HealthOnKillWhileActive` 8 points, `HealthOnHeadshotWhileActive` 15; scale unverified, see the log).
 - NPCs in cars/bikes qualify too (`VehicleKills`): camera always in front of the vehicle, looking back at the
   victim and following the vehicle (heading is smoothed). No other angles; if the front spot is blocked, skipped.
   Not tested in-game: whether `GET_CAR_CHAR_IS_USING` works for a dead ped is unverified (the log says if not).

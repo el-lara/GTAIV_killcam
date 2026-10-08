@@ -35,15 +35,16 @@ namespace
 		bool  onHeadshot = true;
 		bool  onOneShot = true;
 		std::vector<int> headBones = { 0x4B5 }; // BONE_HEAD
+		float deChanceMul = 0.7f;      // killcam chances are multiplied by this while Dead Eye is active
 		float bodyKillChance = 5.0f;   // % chance that an ordinary firearm kill (no headshot, not one shot) also gets a killcam
 		float explosionKillChance = 4.0f; // % chance that an explosion kill gets a (wide, distant) killcam
 		float expDistMin = 7.0f, expDistMax = 12.0f;
-		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
-		float killRefill = 0.05f;      // ... and per any other kill you make
-		float healthKillActive = 5.0f;      // health points restored per kill while Dead Eye is active (0 = off)
-		float healthHeadshotActive = 10.0f; // ... and per headshot kill
-		float headshotRefillActive = 0.05f; // same as headshotRefill but while Dead Eye is active
-		float killRefillActive = 0.025f;    // same as killRefill but while Dead Eye is active
+		float headshotRefill = 0.20f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
+		float killRefill = 0.075f;     // ... and per any other kill you make
+		float healthKillActive = 8.0f;      // health points restored per kill while Dead Eye is active (0 = off)
+		float healthHeadshotActive = 15.0f; // ... and per headshot kill
+		float headshotRefillActive = 0.075f; // same as headshotRefill but while Dead Eye is active
+		float killRefillActive = 0.04f;     // same as killRefill but while Dead Eye is active
 		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
 		float afterTimeScale = 0.0f;   // its time scale; 0 = the time scale of the killcam that just played
 		int   restoreAimMode = 0;      // after the killcam: 0 = leave the camera, 1 = SET_GAME_CAM_HEADING(saved heading), 2 = SET_GAME_CAM_HEADING(0)
@@ -249,6 +250,9 @@ namespace
 			cfg.killRefill = f("KillRefill", cfg.killRefill);
 			cfg.headshotRefillActive = f("HeadshotRefillWhileActive", cfg.headshotRefillActive);
 			cfg.killRefillActive = f("KillRefillWhileActive", cfg.killRefillActive);
+			cfg.deChanceMul = f("KillcamChanceMultiplier", cfg.deChanceMul);
+			if (cfg.deChanceMul < 0.0f) cfg.deChanceMul = 0.0f;
+			if (cfg.deChanceMul > 1.0f) cfg.deChanceMul = 1.0f;
 			cfg.healthKillActive = f("HealthOnKillWhileActive", cfg.healthKillActive);
 			cfg.healthHeadshotActive = f("HealthOnHeadshotWhileActive", cfg.healthHeadshotActive);
 			if (cfg.healthKillActive < 0.0f) cfg.healthKillActive = 0.0f;
@@ -1178,8 +1182,9 @@ namespace
 
 		bool qualifies = (cfg.onHeadshot && headshot) || (cfg.onOneShot && oneShot);
 		bool bodyRoll = false, explRoll = false;
-		if (!qualifies && IsFirearm(weapon) && Rand01() * 100.0f < cfg.bodyKillChance) { qualifies = true; bodyRoll = true; }
-		if (!qualifies && explosion && Rand01() * 100.0f < cfg.explosionKillChance) { qualifies = true; explRoll = true; }
+		const float chanceMul = de.userWanted ? cfg.deChanceMul : 1.0f; // lower killcam chances while Dead Eye is active
+		if (!qualifies && IsFirearm(weapon) && Rand01() * 100.0f < cfg.bodyKillChance * chanceMul) { qualifies = true; bodyRoll = true; }
+		if (!qualifies && explosion && Rand01() * 100.0f < cfg.explosionKillChance * chanceMul) { qualifies = true; explRoll = true; }
 
 		Log("player kill: ped %d bone %d(0x%X) weapon %d health %d/%d inVehicle=%d explosion=%d -> headshot=%d oneShot=%d bodyRoll=%d explRoll=%d",
 			ped, bone, bone, weapon, st.lastHealth, st.baseHealth, (int)inVehicle, (int)explosion, (int)headshot, (int)oneShot, (int)bodyRoll, (int)explRoll);
@@ -1192,7 +1197,8 @@ namespace
 		const float cooldown = sniper ? cfg.sniperCooldownSec : currentCooldown;
 		if (now - lastTrigger < cooldown) { Log("skipped: cooldown (%.1fs left%s)", cooldown - (now - lastTrigger), sniper ? ", sniper" : ""); return; }
 		const float chance = sniper ? cfg.sniperChance : cfg.chance;
-		if (Rand01() * 100.0f >= chance) { Log("skipped: chance roll (%.0f%%%s)", chance, sniper ? ", sniper" : ""); return; }
+		const float effChance = chance * chanceMul;
+		if (Rand01() * 100.0f >= effChance) { Log("skipped: chance roll (%.0f%%%s%s)", effChance, sniper ? ", sniper" : "", chanceMul < 1.0f ? ", dead eye" : ""); return; }
 
 		Vec3 v, p;
 		Coords(ped, v.x, v.y, v.z);
