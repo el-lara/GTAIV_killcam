@@ -40,6 +40,8 @@ namespace
 		float expDistMin = 7.0f, expDistMax = 12.0f;
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
 		float killRefill = 0.05f;      // ... and per any other kill you make
+		float headshotRefillActive = 0.05f; // same as headshotRefill but while Dead Eye is active
+		float killRefillActive = 0.025f;    // same as killRefill but while Dead Eye is active
 		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
 		float afterTimeScale = 0.0f;   // its time scale; 0 = the time scale of the killcam that just played
 		int   restoreAimMode = 0;      // after the killcam: 0 = leave the camera, 1 = SET_GAME_CAM_HEADING(saved heading), 2 = SET_GAME_CAM_HEADING(0)
@@ -243,6 +245,12 @@ namespace
 			cfg.deMinToStart = f("MinToStart", cfg.deMinToStart);
 			cfg.headshotRefill = f("HeadshotRefill", cfg.headshotRefill);
 			cfg.killRefill = f("KillRefill", cfg.killRefill);
+			cfg.headshotRefillActive = f("HeadshotRefillWhileActive", cfg.headshotRefillActive);
+			cfg.killRefillActive = f("KillRefillWhileActive", cfg.killRefillActive);
+			if (cfg.headshotRefillActive < 0.0f) cfg.headshotRefillActive = 0.0f;
+			if (cfg.headshotRefillActive > 1.0f) cfg.headshotRefillActive = 1.0f;
+			if (cfg.killRefillActive < 0.0f) cfg.killRefillActive = 0.0f;
+			if (cfg.killRefillActive > 1.0f) cfg.killRefillActive = 1.0f;
 			cfg.deHudX = f("HudX", cfg.deHudX);
 			cfg.deHudY = f("HudY", cfg.deHudY);
 			cfg.deHudScale = f("HudScale", cfg.deHudScale);
@@ -1126,11 +1134,13 @@ namespace
 
 		// Kills refill the Dead Eye meter (headshots a bit more), whether or not a killcam follows.
 		{
-			const float refill = headshot ? cfg.headshotRefill : cfg.killRefill;
+			const bool active = de.userWanted; // Dead Eye is being used right now
+			const float refill = active ? (headshot ? cfg.headshotRefillActive : cfg.killRefillActive)
+			                            : (headshot ? cfg.headshotRefill : cfg.killRefill);
 			if (cfg.deadEye && refill > 0.0f)
 			{
 				de.energy = fminf(1.0f, de.energy + refill);
-				Log("%s: dead eye +%.0f%% -> %.0f%%", headshot ? "headshot" : "kill", refill * 100.0f, de.energy * 100.0f);
+				Log("%s%s: dead eye +%.1f%% -> %.1f%%", headshot ? "headshot" : "kill", active ? " (while active)" : "", refill * 100.0f, de.energy * 100.0f);
 			}
 		}
 
