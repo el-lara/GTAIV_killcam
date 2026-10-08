@@ -34,6 +34,9 @@ namespace
 		bool  onOneShot = true;
 		std::vector<int> headBones = { 0x4B5 }; // BONE_HEAD
 		float bodyKillChance = 5.0f;   // % chance that an ordinary firearm kill (no headshot, not one shot) also gets a killcam
+		float explosionKillChance = 4.0f; // % chance that an explosion kill gets a (wide, distant) killcam
+		float expDistMin = 7.0f, expDistMax = 12.0f;
+		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
 		bool  vehicleKills = true;     // allow killcams for NPCs in cars/bikes (always from the front)
 		float vehDistMin = 4.0f, vehDistMax = 6.5f;   // meters ahead of the vehicle
 		float vehHeightMin = 0.8f, vehHeightMax = 2.0f; // camera height above the vehicle position
@@ -63,8 +66,8 @@ namespace
 		float deMinToStart = 0.20f;    // after running dry, the meter must refill to this fraction to start again
 		bool  deHud = true;
 		bool  deHudAlways = false;     // false = only show while using or recharging
-		float deHudX = 0.50f, deHudY = 0.90f;
-		float deHudScale = 0.35f;
+		float deHudX = 0.030f, deHudY = 0.580f; // left edge, mid-lower, clear of the radar
+		float deHudScale = 0.20f;
 		int   deMethod = 1;            // 1 = SET_CHAR_ALL_ANIMS_SPEED, 2 = SET_CHAR_MOVE_ANIM_SPEED_MULTIPLIER, 0 = world only
 		char  raycastPattern[256] = "";
 		int   raycastOffset = 0;
@@ -116,6 +119,9 @@ namespace
 		cfg.onOneShot = IniBool("TriggerOnOneShot", cfg.onOneShot);
 		cfg.bodyKillChance = IniFloat("BodyKillChancePercent", cfg.bodyKillChance);
 		cfg.vehicleKills = IniBool("VehicleKills", cfg.vehicleKills);
+		cfg.explosionKillChance = IniFloat("ExplosionKillChancePercent", cfg.explosionKillChance);
+		cfg.expDistMin = IniFloat("ExplosionDistMin", cfg.expDistMin);
+		cfg.expDistMax = IniFloat("ExplosionDistMax", cfg.expDistMax);
 		cfg.vehDistMin = IniFloat("VehicleDistMin", cfg.vehDistMin);
 		cfg.vehDistMax = IniFloat("VehicleDistMax", cfg.vehDistMax);
 		cfg.vehHeightMin = IniFloat("VehicleHeightMin", cfg.vehHeightMin);
@@ -154,6 +160,7 @@ namespace
 			cfg.deRechargeDelaySec = f("RechargeDelaySec", cfg.deRechargeDelaySec);
 			cfg.deRechargeSec = f("RechargeSeconds", cfg.deRechargeSec);
 			cfg.deMinToStart = f("MinToStart", cfg.deMinToStart);
+			cfg.headshotRefill = f("HeadshotRefill", cfg.headshotRefill);
 			cfg.deHudX = f("HudX", cfg.deHudX);
 			cfg.deHudY = f("HudY", cfg.deHudY);
 			cfg.deHudScale = f("HudScale", cfg.deHudScale);
@@ -192,6 +199,12 @@ namespace
 		if (cfg.timeScale > 1.0f) cfg.timeScale = 1.0f;
 		if (cfg.bodyKillChance < 0.0f) cfg.bodyKillChance = 0.0f;
 		if (cfg.bodyKillChance > 100.0f) cfg.bodyKillChance = 100.0f;
+		if (cfg.explosionKillChance < 0.0f) cfg.explosionKillChance = 0.0f;
+		if (cfg.explosionKillChance > 100.0f) cfg.explosionKillChance = 100.0f;
+		if (cfg.expDistMin < 3.0f) cfg.expDistMin = 3.0f;
+		if (cfg.expDistMax < cfg.expDistMin) cfg.expDistMax = cfg.expDistMin;
+		if (cfg.headshotRefill < 0.0f) cfg.headshotRefill = 0.0f;
+		if (cfg.headshotRefill > 1.0f) cfg.headshotRefill = 1.0f;
 		if (cfg.vehDistMin < 1.5f) cfg.vehDistMin = 1.5f;
 		if (cfg.vehDistMax < cfg.vehDistMin) cfg.vehDistMax = cfg.vehDistMin;
 		if (cfg.vehHeightMax < cfg.vehHeightMin) cfg.vehHeightMax = cfg.vehHeightMin;
@@ -418,6 +431,7 @@ namespace
 		N_IS_PAUSE_MENU_ACTIVE = 0x6C4568A7,
 		N_GET_GROUND_Z_FOR_3D_COORD = 0x6D902EE3,
 		N_SET_CHAR_ALL_ANIMS_SPEED = 0x5BDB7E2C,
+		N_HAS_CHAR_BEEN_DAMAGED_BY_WEAPON = 0x6DB26E07,
 		N_GET_CAR_CHAR_IS_USING = 0x1B067237,
 		N_GET_CAR_COORDINATES = 0x2D432EAB,
 		N_GET_CAR_FORWARD_X = 0x47A21100,
@@ -709,17 +723,18 @@ namespace
 		Native(N_POINT_CAM_AT_COORD, active.cam, t.x, t.y, t.z);
 	}
 
-	bool StartKillCam(const Vec3& v)
+	bool StartKillCam(const Vec3& v, bool wide = false)
 	{
 		active.victim = v;
 
 		// Random shot: movement (mostly fixed) x camera angle.
 		const float mw[3] = { cfg.wStatic, cfg.wOrbit, cfg.wDolly };
-		const float aw[3] = { cfg.wEye, cfg.wHigh, cfg.wLow };
+		const float aw[3] = { cfg.wEye, cfg.wHigh, wide ? 0.0f : cfg.wLow }; // no low angle for distant explosion shots
 		int move = PickWeighted(mw, 3), angle = PickWeighted(aw, 3);
 
-		active.baseRadius = RandRange(cfg.radiusMin, cfg.radiusMax);
+		active.baseRadius = wide ? RandRange(cfg.expDistMin, cfg.expDistMax) : RandRange(cfg.radiusMin, cfg.radiusMax);
 		if (angle == ANGLE_HIGH && active.baseRadius < 3.0f) active.baseRadius = 3.0f;
+		if (wide && angle == ANGLE_HIGH) active.baseRadius = fmaxf(active.baseRadius, 8.0f);
 		active.orbit = 0; active.dolly = 0;
 		if (move == MOVE_ORBIT)
 			active.orbit = (Rand01() < 0.5f ? -1.0f : 1.0f) * RandRange(cfg.orbitSpeedMin, cfg.orbitSpeedMax) * 0.0174533f;
@@ -793,6 +808,20 @@ namespace
 		}
 	}
 
+	// Dead Eye state (logic further below); declared here because kills refill the meter.
+	struct DeadEye
+	{
+		bool   on = false;       // effect currently applied (scale != 1 or anim speed != 1)
+		bool   toggled = false;
+		bool   keyWasDown = false;
+		float  cur = 1.0f;       // current world time scale
+		double last = 0.0;
+		float  animApplied = 1.0f;
+		float  energy = 1.0f;    // 0..1
+		bool   lockedOut = false; // ran dry; waits for energy >= deMinToStart
+		double releasedAt = 0.0;  // when the effect last stopped (real time)
+	} de;
+
 	// ----------------------------------------------------------- kill detection
 	struct PedState { int baseHealth; int lastHealth; bool counted; };
 	std::unordered_map<int, PedState> peds;
@@ -817,12 +846,25 @@ namespace
 		Native(N_GET_CURRENT_CHAR_WEAPON, player, &weapon);
 		bool oneShot = st.lastHealth >= st.baseHealth && IsFirearm(weapon);
 
-		bool qualifies = (cfg.onHeadshot && headshot) || (cfg.onOneShot && oneShot);
-		bool bodyRoll = false;
-		if (!qualifies && IsFirearm(weapon) && Rand01() * 100.0f < cfg.bodyKillChance) { qualifies = true; bodyRoll = true; }
+		// Headshot kills refill the Dead Eye meter, whether or not a killcam follows.
+		if (headshot && cfg.deadEye && cfg.headshotRefill > 0.0f)
+		{
+			de.energy = fminf(1.0f, de.energy + cfg.headshotRefill);
+			Log("headshot: dead eye +%.0f%% -> %.0f%%", cfg.headshotRefill * 100.0f, de.energy * 100.0f);
+		}
 
-		Log("player kill: ped %d bone %d(0x%X) weapon %d health %d/%d inVehicle=%d -> headshot=%d oneShot=%d bodyRoll=%d",
-			ped, bone, bone, weapon, st.lastHealth, st.baseHealth, (int)inVehicle, (int)headshot, (int)oneShot, (int)bodyRoll);
+		// Explosion kill: damaged by an explosive weapon type.
+		bool explosion = false;
+		for (int w : { 4, 5, 6, 18, 51 }) // grenade, molotov, rocket, RPG, WEAPON_EXPLOSION
+			if (NBool(Native(N_HAS_CHAR_BEEN_DAMAGED_BY_WEAPON, ped, w))) { explosion = true; break; }
+
+		bool qualifies = (cfg.onHeadshot && headshot) || (cfg.onOneShot && oneShot);
+		bool bodyRoll = false, explRoll = false;
+		if (!qualifies && IsFirearm(weapon) && Rand01() * 100.0f < cfg.bodyKillChance) { qualifies = true; bodyRoll = true; }
+		if (!qualifies && explosion && Rand01() * 100.0f < cfg.explosionKillChance) { qualifies = true; explRoll = true; }
+
+		Log("player kill: ped %d bone %d(0x%X) weapon %d health %d/%d inVehicle=%d explosion=%d -> headshot=%d oneShot=%d bodyRoll=%d explRoll=%d",
+			ped, bone, bone, weapon, st.lastHealth, st.baseHealth, (int)inVehicle, (int)explosion, (int)headshot, (int)oneShot, (int)bodyRoll, (int)explRoll);
 
 		if (!qualifies) return;
 
@@ -845,7 +887,7 @@ namespace
 			if (!car) { Log("skipped: victim in vehicle but GET_CAR_CHAR_IS_USING gave 0"); return; }
 			started = StartVehicleKillCam(ped, car, v);
 		}
-		else started = StartKillCam(v);
+		else started = StartKillCam(v, explRoll);
 		if (started) lastTrigger = now;
 	}
 
@@ -853,18 +895,6 @@ namespace
 	// Hold a key: SET_TIME_SCALE drops and the player's animations are sped up by
 	// playerSpeed / timeScale, so the player moves/aims/reloads at ~playerSpeed of normal speed
 	// while NPCs and physics run at timeScale.
-	struct DeadEye
-	{
-		bool   on = false;       // effect currently applied (scale != 1 or anim speed != 1)
-		bool   toggled = false;
-		bool   keyWasDown = false;
-		float  cur = 1.0f;       // current world time scale
-		double last = 0.0;
-		float  animApplied = 1.0f;
-		float  energy = 1.0f;    // 0..1
-		bool   lockedOut = false; // ran dry; waits for energy >= deMinToStart
-		double releasedAt = 0.0;  // when the effect last stopped (real time)
-	} de;
 
 	bool GameHasFocus()
 	{
@@ -897,7 +927,7 @@ namespace
 	{
 		if (!cfg.deHud) return;
 		if (!usingNow && !cfg.deHudAlways && de.energy >= 0.999f) return;
-		const int n = 20;
+		const int n = 12;
 		int filled = (int)(de.energy * n + 0.5f);
 		char bar[64];
 		int k = 0;
@@ -913,10 +943,10 @@ namespace
 		else if (de.lockedOut) { r = 230; g = 60; b = 60; }
 
 		Native(N_SET_TEXT_FONT, 0u);
-		Native(N_SET_TEXT_SCALE, cfg.deHudScale, cfg.deHudScale * 1.4f);
+		Native(N_SET_TEXT_SCALE, cfg.deHudScale, cfg.deHudScale * 1.3f);
 		Native(N_SET_TEXT_COLOUR, r, g, b, 235u);
 		Native(N_SET_TEXT_DROPSHADOW, true, 0u, 0u, 0u, 255u);
-		Native(N_SET_TEXT_CENTRE, true);
+		Native(N_SET_TEXT_CENTRE, false); // left-aligned at HudX
 		Native(N_SET_TEXT_PROPORTIONAL, false);
 		Native(N_SET_TEXT_BACKGROUND, false);
 		Native(N_DISPLAY_TEXT_WITH_LITERAL_STRING, cfg.deHudX, cfg.deHudY, "STRING", (const char*)line);
