@@ -200,6 +200,8 @@ namespace
 	// ------------------------------------------------------------ game access
 	struct Game
 	{
+		void*   (__stdcall* getNative)(uint32_t) = nullptr; // preferred native lookup (as FusionFix on the Complete Edition)
+		void*   (*findPlayerPed)(int) = nullptr;            // returns CPed*, fallback for the player handle
 		uint32_t* nativeTableSize = nullptr;
 		uint32_t** nativeTableVar = nullptr;   // address of the variable holding the table
 		uint8_t*  userPause = nullptr;
@@ -218,6 +220,17 @@ namespace
 		int32_t  firstFree;
 		int32_t  used;
 	};
+
+	int PedHandleFromPointer(void* ped)
+	{
+		fwPool* pool = game.pedPoolVar ? (fwPool*)*game.pedPoolVar : nullptr;
+		if (!pool || !pool->storage || !pool->flags || pool->stride <= 0) return 0;
+		ptrdiff_t off = (uint8_t*)ped - pool->storage;
+		if (off < 0 || off % pool->stride) return 0;
+		int i = (int)(off / pool->stride);
+		if (i >= pool->size || (pool->flags[i] & 0x80)) return 0;
+		return (int)pool->flags[i] + (i << 8);
+	}
 
 	// Same layout as scrNativeCallContext / NativeContext used by FusionFix.
 	struct NativeCtx
@@ -248,7 +261,8 @@ namespace
 		if (it != nativeCache.end()) return it->second;
 
 		NativeFn fn = nullptr;
-		uint32_t* table = game.nativeTableVar ? *game.nativeTableVar : nullptr;
+		if (game.getNative && hash) fn = (NativeFn)game.getNative(hash);
+		uint32_t* table = (!fn && game.nativeTableVar) ? *game.nativeTableVar : nullptr;
 		uint32_t  size = game.nativeTableSize ? *game.nativeTableSize : 0;
 		if (table && size && hash)
 		{
@@ -268,6 +282,13 @@ namespace
 			if (h == hash) fn = (NativeFn)table[2 * idx + 1];
 		}
 		if (fn) nativeCache[hash] = fn; // only cache hits: the table fills while the game boots
+		else
+		{
+			static std::vector<uint32_t> missLogged;
+			bool seen = false;
+			for (uint32_t h : missLogged) if (h == hash) { seen = true; break; }
+			if (!seen) { missLogged.push_back(hash); Log("native 0x%08X NOT FOUND", hash); }
+		}
 		return fn;
 	}
 
@@ -311,10 +332,21 @@ namespace
 	};
 
 	bool  NBool(uint32_t r) { return (r & 0xFF) != 0; }
+	int PedHandleFromPointer(void* ped);
 	int   PlayerPed()
 	{
 		int ped = 0;
-		Native(N_GET_PLAYER_CHAR, (int)Native(N_GET_PLAYER_ID), &ped);
+		int id = (int)Native(N_GET_PLAYER_ID);
+		Native(N_GET_PLAYER_CHAR, id, &ped);
+		static int logged = 0;
+		if (!ped && game.findPlayerPed)
+		{
+			void* ptr = game.findPlayerPed(0);
+			int viaPtr = ptr ? PedHandleFromPointer(ptr) : 0;
+			if (logged < 3) { logged++; Log("player: native route gave 0 (playerId=%d), FindPlayerPed(0)=%p -> handle %d", id, ptr, viaPtr); }
+			return viaPtr;
+		}
+		if (logged < 3) { logged++; Log("player: native route ok, playerId=%d handle=%d", id, ped); }
 		return ped;
 	}
 	bool  IsDead(int ped) { return NBool(Native(N_IS_CHAR_DEAD, ped)); }
@@ -681,11 +713,24 @@ namespace
 		size_t n = 0;
 		uint8_t* p;
 
-		if (!(p = Find("native table size", { "8B 35 ? ? ? ? 85 F6 75 06 33 C0 5E C2 04 00 53 57 8B 7C 24 10" }, &n))) return false;
-		game.nativeTableSize = *(uint32_t**)(p + 2);
+		// Native lookup. FusionFix on the Complete Edition uses the 2nd match of this function prologue.
+		{
+			Pattern gp;
+			gp.Parse("56 8B 35 ? ? ? ? 85 F6 75 06");
+			auto m = ScanAll(gp);
+			if (m.size() >= 2) game.getNative = (void*(__stdcall*)(uint32_t))m[1];
+			else if (m.size() == 1) game.getNative = (void*(__stdcall*)(uint32_t))m[0];
+			Log("native lookup fn: %u match(es), using %p", (unsigned)m.size(), (void*)game.getNative);
+		}
+		// Table walk, only a fallback. May point at the wrong table on this build.
+		if ((p = Find("native table size", { "8B 35 ? ? ? ? 85 F6 75 06 33 C0 5E C2 04 00 53 57 8B 7C 24 10" }, &n)))
+			game.nativeTableSize = *(uint32_t**)(p + 2);
+		if ((p = Find("native table", { "8B 1D ? ? ? ? 8B CF 8B 04 D3 3B C7 74 19 8D 64 24 00 85 C0" }, &n)))
+			game.nativeTableVar = *(uint32_t***)(p + 2);
+		if (!game.getNative && !(game.nativeTableSize && game.nativeTableVar)) return false;
 
-		if (!(p = Find("native table", { "8B 1D ? ? ? ? 8B CF 8B 04 D3 3B C7 74 19 8D 64 24 00 85 C0" }, &n))) return false;
-		game.nativeTableVar = *(uint32_t***)(p + 2);
+		if ((p = Find("FindPlayerPed", { "8B 44 24 04 85 C0 75 18 A1" }, &n)))
+			game.findPlayerPed = (void*(*)(int))p;
 
 		if (!(p = Find("pause flags", { "0F B6 0D ? ? ? ? 0F B6 C0 0B C1" }, &n))) return false;
 		{
