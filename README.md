@@ -51,14 +51,14 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
   prints the gameplay camera rotation before and after: if they differ, the lock did not hold. `HoldPlayerHeading` (default on) re-applies the player's heading every frame during the killcam and its tail so the
   character cannot turn, and `RestoreAimHeading` (default 0 = off) can turn the gameplay camera when the lock ends (1 = saved heading,
   2 = heading 0). With 1 the aim spun at the end in testing, so it is off.
-- Dead Eye costs `ActivationCost` (10% of the meter) every time it is switched on.
+- Dead Eye costs `ActivationCost` (5% of the meter) every time it is switched on.
 - Cooldown: `CooldownSec` 30, but after `ShortCooldownChancePercent` (45) of killcams it is `ShortCooldownSec` (15);
   chosen when each killcam starts and logged as `next cooldown`. Sniper kills keep `SniperCooldownSec`.
 - Not every qualifying kill triggers: `ArmNextKillChancePercent` (25) makes a kill only arm the next one, and the
   next qualifying kill within `ArmNextKillWindowSec` (8) triggers for sure.
 - Cinematic killcams (`CinematicChancePercent` 15, 50 when armed): time scale 0.03-0.07 for 3.2 s, the victim for
   55% of it, then a cut to a 3/4 front view of the shooter. Unverified in-game.
-- Headshot kills refill the Dead Eye meter by `HeadshotRefill` (default 15%).
+- Kills refill the Dead Eye meter by `KillRefill` (default 5%); headshot kills refill `HeadshotRefill` (15%) instead.
 - NPCs in cars/bikes qualify too (`VehicleKills`): camera always in front of the vehicle, looking back at the
   victim and following the vehicle (heading is smoothed). No other angles; if the front spot is blocked, skipped.
   Not tested in-game: whether `GET_CAR_CHAR_IS_USING` works for a dead ped is unverified (the log says if not).

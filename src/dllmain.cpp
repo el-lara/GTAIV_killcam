@@ -39,6 +39,7 @@ namespace
 		float explosionKillChance = 4.0f; // % chance that an explosion kill gets a (wide, distant) killcam
 		float expDistMin = 7.0f, expDistMax = 12.0f;
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
+		float killRefill = 0.05f;      // ... and per any other kill you make
 		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
 		float afterTimeScale = 0.0f;   // its time scale; 0 = the time scale of the killcam that just played
 		int   restoreAimMode = 0;      // after the killcam: 0 = leave the camera, 1 = SET_GAME_CAM_HEADING(saved heading), 2 = SET_GAME_CAM_HEADING(0)
@@ -81,7 +82,7 @@ namespace
 		float dePlayerSpeed = 0.85f;   // player speed relative to normal time (1 = unaffected)
 		float deMaxAnimSpeed = 4.0f;   // cap for the player's animation speed multiplier
 		float deRampSec = 0.15f;       // real seconds to blend in/out
-		float deActivationCost = 0.10f; // fraction of a full meter spent each time Dead Eye is switched on
+		float deActivationCost = 0.05f; // fraction of a full meter spent each time Dead Eye is switched on
 		float deMaxSec = 10.0f;        // seconds of Dead Eye on a full meter
 		float deRechargeDelaySec = 1.0f; // after releasing, wait this long before recharging
 		float deRechargeSec = 20.0f;   // seconds to refill an empty meter
@@ -230,6 +231,7 @@ namespace
 			cfg.deRechargeSec = f("RechargeSeconds", cfg.deRechargeSec);
 			cfg.deMinToStart = f("MinToStart", cfg.deMinToStart);
 			cfg.headshotRefill = f("HeadshotRefill", cfg.headshotRefill);
+			cfg.killRefill = f("KillRefill", cfg.killRefill);
 			cfg.deHudX = f("HudX", cfg.deHudX);
 			cfg.deHudY = f("HudY", cfg.deHudY);
 			cfg.deHudScale = f("HudScale", cfg.deHudScale);
@@ -277,6 +279,8 @@ namespace
 		if (cfg.explosionKillChance > 100.0f) cfg.explosionKillChance = 100.0f;
 		if (cfg.expDistMin < 3.0f) cfg.expDistMin = 3.0f;
 		if (cfg.expDistMax < cfg.expDistMin) cfg.expDistMax = cfg.expDistMin;
+		if (cfg.killRefill < 0.0f) cfg.killRefill = 0.0f;
+		if (cfg.killRefill > 1.0f) cfg.killRefill = 1.0f;
 		if (cfg.headshotRefill < 0.0f) cfg.headshotRefill = 0.0f;
 		if (cfg.headshotRefill > 1.0f) cfg.headshotRefill = 1.0f;
 		if (cfg.vehDistMin < 1.5f) cfg.vehDistMin = 1.5f;
@@ -1046,11 +1050,14 @@ namespace
 		Native(N_GET_CURRENT_CHAR_WEAPON, player, &weapon);
 		bool oneShot = st.lastHealth >= st.baseHealth && IsFirearm(weapon);
 
-		// Headshot kills refill the Dead Eye meter, whether or not a killcam follows.
-		if (headshot && cfg.deadEye && cfg.headshotRefill > 0.0f)
+		// Kills refill the Dead Eye meter (headshots a bit more), whether or not a killcam follows.
 		{
-			de.energy = fminf(1.0f, de.energy + cfg.headshotRefill);
-			Log("headshot: dead eye +%.0f%% -> %.0f%%", cfg.headshotRefill * 100.0f, de.energy * 100.0f);
+			const float refill = headshot ? cfg.headshotRefill : cfg.killRefill;
+			if (cfg.deadEye && refill > 0.0f)
+			{
+				de.energy = fminf(1.0f, de.energy + refill);
+				Log("%s: dead eye +%.0f%% -> %.0f%%", headshot ? "headshot" : "kill", refill * 100.0f, de.energy * 100.0f);
+			}
 		}
 
 		// Explosion kill: damaged by an explosive weapon type.
