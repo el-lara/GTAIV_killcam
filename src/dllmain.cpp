@@ -66,7 +66,7 @@ namespace
 		float deMinToStart = 0.20f;    // after running dry, the meter must refill to this fraction to start again
 		bool  deHud = true;
 		bool  deHudAlways = false;     // false = only show while using or recharging
-		float deHudX = 0.030f, deHudY = 0.580f; // left edge, mid-lower, clear of the radar
+		float deHudX = 0.058f, deHudY = 0.955f; // just below the radar, left edge aligned with it
 		float deHudScale = 0.20f;
 		int   deMethod = 1;            // 1 = SET_CHAR_ALL_ANIMS_SPEED, 2 = SET_CHAR_MOVE_ANIM_SPEED_MULTIPLIER, 0 = world only
 		char  raycastPattern[256] = "";
