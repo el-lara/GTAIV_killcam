@@ -44,6 +44,8 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
   (`SET_GAME_CAMERA_CONTROLS_ACTIVE`, method 1) and/or the player control (`SET_PLAYER_CONTROL`, method 2) are
   switched off and restored when it ends. Method 1 alone did not work for the author; unverified otherwise. The
   log line `aim lock (method N): player control before=.. after=..` shows whether the native took effect.
+- When a killcam ends and the camera returns to the player, slow motion continues for `AfterSlowSec` (0.5 s) at
+  the Dead Eye time scale (player boosted as in Dead Eye, no energy used), then blends back to normal.
 - Headshot kills refill the Dead Eye meter by `HeadshotRefill` (default 15%).
 - NPCs in cars/bikes qualify too (`VehicleKills`): camera always in front of the vehicle, looking back at the
   victim and following the vehicle (heading is smoothed). No other angles; if the front spot is blocked, skipped.

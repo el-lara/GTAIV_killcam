@@ -37,8 +37,10 @@ namespace
 		float explosionKillChance = 4.0f; // % chance that an explosion kill gets a (wide, distant) killcam
 		float expDistMin = 7.0f, expDistMax = 12.0f;
 		float headshotRefill = 0.15f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
+		float afterSlowSec = 0.5f;     // slow motion kept after the camera returns to the player (real seconds, 0 = off)
+		float afterTimeScale = 0.0f;   // its time scale; 0 = use the Dead Eye time scale
 		bool  lockAim = true;          // keep your aim from changing while the killcam plays
-		int   lockAimMethod = 3;       // bit 1 = SET_GAME_CAMERA_CONTROLS_ACTIVE, bit 2 = SET_PLAYER_CONTROL
+		int   lockAimMethod = 1;       // bit 1 = SET_GAME_CAMERA_CONTROLS_ACTIVE, bit 2 = SET_PLAYER_CONTROL
 		std::vector<int> sniperIds = { 16, 17 }; // SNIPERRIFLE, M40A1
 		float sniperChance = 100.0f;   // % chance for kills made with a sniper weapon (replaces ChancePercent)
 		float sniperCooldownSec = 7.0f; // cooldown used for sniper kills (replaces CooldownSec)
@@ -125,8 +127,13 @@ namespace
 		cfg.onOneShot = IniBool("TriggerOnOneShot", cfg.onOneShot);
 		cfg.bodyKillChance = IniFloat("BodyKillChancePercent", cfg.bodyKillChance);
 		cfg.vehicleKills = IniBool("VehicleKills", cfg.vehicleKills);
+		cfg.afterSlowSec = IniFloat("AfterSlowSec", cfg.afterSlowSec);
+		cfg.afterTimeScale = IniFloat("AfterTimeScale", cfg.afterTimeScale);
+		if (cfg.afterSlowSec < 0.0f) cfg.afterSlowSec = 0.0f;
+		if (cfg.afterTimeScale < 0.0f) cfg.afterTimeScale = 0.0f;
+		if (cfg.afterTimeScale > 1.0f) cfg.afterTimeScale = 1.0f;
 		cfg.lockAim = IniBool("LockAimDuringKillcam", cfg.lockAim);
-		cfg.lockAimMethod = (int)GetPrivateProfileIntA("KillCam", "LockAimMethod", cfg.lockAimMethod, iniPath);
+		cfg.lockAimMethod = (int)GetPrivateProfileIntA("KillCam", "LockAimMethod", 1, iniPath);
 		cfg.sniperChance = IniFloat("SniperChancePercent", cfg.sniperChance);
 		cfg.sniperCooldownSec = IniFloat("SniperCooldownSec", cfg.sniperCooldownSec);
 		if (cfg.sniperCooldownSec < 0.0f) cfg.sniperCooldownSec = 0.0f;
@@ -573,6 +580,20 @@ namespace
 	}
 
 	// ------------------------------------------------------------------ killcam
+	struct DeadEye
+	{
+		bool   on = false;       // effect currently applied (scale != 1 or anim speed != 1)
+		bool   toggled = false;
+		bool   keyWasDown = false;
+		float  cur = 1.0f;       // current world time scale
+		double last = 0.0;
+		float  animApplied = 1.0f;
+		float  energy = 1.0f;    // 0..1
+		bool   lockedOut = false; // ran dry; waits for energy >= deMinToStart
+		double releasedAt = 0.0;  // when the effect last stopped (real time)
+	} de;
+	double tailUntil = 0.0; // slow-motion tail after a killcam ends (real time)
+
 	struct Active
 	{
 		bool   on = false;
@@ -610,7 +631,15 @@ namespace
 		Native(N_SET_CAM_PROPAGATE, active.cam, false);
 		Native(N_SET_CAM_ACTIVE, active.cam, false);
 		Native(N_DESTROY_CAM, active.cam);
-		Native(N_SET_TIME_SCALE, 1.0f);
+		if (cfg.afterSlowSec > 0.0f && !strcmp(why, "duration"))
+		{
+			// Camera is back on the player: stay in slow motion for a moment so there is time to aim.
+			float ts = cfg.afterTimeScale > 0.0f ? cfg.afterTimeScale : cfg.deTimeScale;
+			Native(N_SET_TIME_SCALE, ts);
+			de.cur = ts; de.on = true; de.toggled = false;
+			tailUntil = NowSec() + cfg.afterSlowSec;
+		}
+		else Native(N_SET_TIME_SCALE, 1.0f);
 		if (active.aimLocked) { Native(N_SET_GAME_CAMERA_CONTROLS_ACTIVE, true); active.aimLocked = false; }
 		if (active.ctrlLocked)
 		{
@@ -852,18 +881,6 @@ namespace
 	}
 
 	// Dead Eye state (logic further below); declared here because kills refill the meter.
-	struct DeadEye
-	{
-		bool   on = false;       // effect currently applied (scale != 1 or anim speed != 1)
-		bool   toggled = false;
-		bool   keyWasDown = false;
-		float  cur = 1.0f;       // current world time scale
-		double last = 0.0;
-		float  animApplied = 1.0f;
-		float  energy = 1.0f;    // 0..1
-		bool   lockedOut = false; // ran dry; waits for energy >= deMinToStart
-		double releasedAt = 0.0;  // when the effect last stopped (real time)
-	} de;
 
 	// ----------------------------------------------------------- kill detection
 	struct PedState { int baseHealth; int lastHealth; bool counted; };
@@ -1002,13 +1019,14 @@ namespace
 	// suppressed = a killcam is running: the effect is off but the meter keeps recharging.
 	void DeadEyeUpdate(int player, bool suppressed)
 	{
-		if (!cfg.deadEye) return;
 		const double now = NowSec();
+		const bool tail = !suppressed && now < tailUntil && cfg.afterSlowSec > 0.0f;
+		if (!cfg.deadEye && !tail && !de.on) return;
 		double dt = de.last > 0.0 ? now - de.last : 0.0;
 		de.last = now;
 		if (dt > 0.1) dt = 0.1;
 
-		bool down = !suppressed && GameHasFocus() && (GetAsyncKeyState(cfg.deKey) & 0x8000) != 0;
+		bool down = cfg.deadEye && !suppressed && GameHasFocus() && (GetAsyncKeyState(cfg.deKey) & 0x8000) != 0;
 		bool want;
 		if (cfg.deToggle)
 		{
@@ -1018,7 +1036,9 @@ namespace
 		else want = down;
 		de.keyWasDown = down;
 
-		if (suppressed || IsDead(player) || NBool(Native(N_IS_PAUSE_MENU_ACTIVE))) want = false;
+		const bool blocked = suppressed || IsDead(player) || NBool(Native(N_IS_PAUSE_MENU_ACTIVE));
+		if (blocked) want = false;
+		if (!cfg.deadEye) want = false;
 
 		// Energy: drains while active, then recharges after a short delay.
 		if (de.lockedOut && de.energy >= cfg.deMinToStart) { de.lockedOut = false; Log("dead eye ready again"); }
@@ -1040,15 +1060,18 @@ namespace
 			if (de.energy > 1.0f) de.energy = 1.0f;
 		}
 
-		DrawDeadEyeHud(want);
+		if (cfg.deadEye) DrawDeadEyeHud(want);
 
-		const float target = want ? cfg.deTimeScale : 1.0f;
+		const bool tailOnly = tail && !want && !blocked; // slow motion after a killcam, no key held, no energy used
+		if (tailOnly) want = true;
+		const float tailScale = cfg.afterTimeScale > 0.0f ? cfg.afterTimeScale : cfg.deTimeScale;
+		const float target = want ? (tailOnly ? tailScale : cfg.deTimeScale) : 1.0f;
 		if (!want && !de.on) return;
 
 		if (!de.on) { de.on = true; Log("dead eye on (timescale %.2f, player speed %.2f, method %d, energy %.0f%%)", cfg.deTimeScale, cfg.dePlayerSpeed, cfg.deMethod, de.energy * 100.0f); }
 
 		// Blend the world scale toward the target (rate: full 1 -> deTimeScale span in deRampSec).
-		float span = 1.0f - cfg.deTimeScale;
+		float span = 1.0f - fminf(cfg.deTimeScale, tailOnly ? tailScale : cfg.deTimeScale);
 		float step = cfg.deRampSec > 0.0f ? span * (float)(dt / cfg.deRampSec) : span;
 		if (de.cur < target) de.cur = fminf(target, de.cur + step);
 		else if (de.cur > target) de.cur = fmaxf(target, de.cur - step);
