@@ -52,6 +52,9 @@ namespace
 		float ultraDurationSec = 3.2f; // real seconds of a cinematic killcam
 		float ultraVictimFrac = 0.55f; // fraction of it spent on the victim before cutting to the shooter
 		bool  ultraShowPlayer = true;
+		// Shooter shot styles (relative weights): 3/4 front, gun pointed at the camera, low hero, over the shoulder, profile, high, gun close-up
+		float wShooter[7] = { 25, 25, 15, 15, 10, 5, 5 };
+		float shooterPushIn = 40.0f;   // % of shooter shots that slowly push in
 		float kcPlayerSpeed = 0.5f;    // player animation speed multiplier during the killcam and its slow tail (1 = off)
 		bool  lockAim = true;          // keep your aim from changing while the killcam plays
 		int   lockAimMethod = 1;       // bit 1 = SET_GAME_CAMERA_CONTROLS_ACTIVE, bit 2 = SET_PLAYER_CONTROL
@@ -161,6 +164,14 @@ namespace
 		cfg.ultraDurationSec = IniFloat("CinematicDurationSec", cfg.ultraDurationSec);
 		cfg.ultraVictimFrac = IniFloat("CinematicVictimFraction", cfg.ultraVictimFrac);
 		cfg.ultraShowPlayer = IniBool("CinematicShowShooter", cfg.ultraShowPlayer);
+		{
+			static const char* keys[7] = { "ShooterWeightFront34", "ShooterWeightGunPoint", "ShooterWeightLowHero", "ShooterWeightOverShoulder",
+			                              "ShooterWeightProfile", "ShooterWeightHigh", "ShooterWeightGunCloseUp" };
+			for (int k = 0; k < 7; k++) cfg.wShooter[k] = IniFloat(keys[k], cfg.wShooter[k]);
+			cfg.shooterPushIn = IniFloat("ShooterPushInChancePercent", cfg.shooterPushIn);
+			if (cfg.shooterPushIn < 0.0f) cfg.shooterPushIn = 0.0f;
+			if (cfg.shooterPushIn > 100.0f) cfg.shooterPushIn = 100.0f;
+		}
 		for (float* pc : { &cfg.chainPercent, &cfg.ultraChance, &cfg.ultraChanceChained })
 		{ if (*pc < 0.0f) *pc = 0.0f; if (*pc > 100.0f) *pc = 100.0f; }
 		if (cfg.chainWindowSec < 1.0f) cfg.chainWindowSec = 1.0f;
@@ -677,6 +688,9 @@ namespace
 		bool   ultra = false;       // cinematic: very slow, cuts from the victim to the shooter
 		int    phase = 1;           // 1 = victim, 2 = shooter
 		double switchAt = 0.0;
+		double p2Start = 0.0;       // when the shooter shot began
+		float  p2Dolly = 0.0f;      // push-in over the shooter shot (negative = closer)
+		Vec3   p2Cam = {}, p2Target = {};
 		bool   aimLocked = false;   // gameplay camera controls currently disabled by us
 		bool   ctrlLocked = false;  // player control currently switched off by us
 		bool   follow = false;
@@ -955,33 +969,78 @@ namespace
 		return true;
 	}
 
-	// Cut to a 3/4 front view of the shooter (face and weapon), like a cinematic kill shot.
+	// ---- Shooter shot ("cinematic" second half): several styles, chosen at random.
+	enum { SH_FRONT34, SH_GUNPOINT, SH_LOWHERO, SH_OVERSHOULDER, SH_PROFILE, SH_HIGH, SH_CLOSEUP, SH_COUNT };
+	const char* shooterName[SH_COUNT] = { "3/4 front", "gun pointed at camera", "low hero", "over the shoulder", "profile", "high angle", "gun close-up" };
+
+	// a = unit vector (x, y) the shooter aims along (towards the victim); returns a camera/target/fov for the style.
+	void BuildShooterShot(int style, float sg, float k, const Vec3& pp, float ax, float ay, const Vec3& victim,
+	                      Vec3& cam, Vec3& target, float& fov)
+	{
+		const float D = 0.0174533f;
+		float ang = 0, d = 2.0f, zc = 0.5f, zt = 0.45f;
+		fov = cfg.fov;
+		switch (style)
+		{
+		case SH_GUNPOINT:     ang = sg * RandRange(5, 22) * D;  d = RandRange(1.6f, 2.3f); zc = RandRange(-0.25f, 0.15f); zt = 0.55f; fov = RandRange(40, 52); break;
+		case SH_LOWHERO:      ang = sg * RandRange(55, 95) * D; d = RandRange(2.4f, 3.4f); zc = -0.5f; zt = 0.75f; fov = RandRange(40, 55); break;
+		case SH_OVERSHOULDER: ang = 3.14159f + sg * RandRange(15, 35) * D; d = RandRange(1.1f, 1.7f); zc = 0.75f; zt = 0.3f; fov = RandRange(45, 60); break;
+		case SH_PROFILE:      ang = sg * RandRange(80, 100) * D; d = RandRange(1.5f, 2.2f); zc = 0.5f; zt = 0.5f; fov = RandRange(35, 45); break;
+		case SH_HIGH:         ang = sg * RandRange(20, 70) * D; d = RandRange(2.4f, 3.4f); zc = RandRange(2.0f, 3.0f); zt = 0.2f; fov = RandRange(40, 50); break;
+		case SH_CLOSEUP:      ang = sg * RandRange(20, 45) * D; d = RandRange(0.9f, 1.3f); zc = 0.25f; zt = 0.25f; fov = RandRange(30, 38); break;
+		default:              ang = sg * RandRange(30, 55) * D; d = RandRange(1.9f, 2.7f); zc = 0.5f; zt = 0.45f; break;
+		}
+		d *= k;
+		const float cx = ax * cosf(ang) - ay * sinf(ang), cy = ax * sinf(ang) + ay * cosf(ang);
+		cam = { pp.x + cx * d, pp.y + cy * d, pp.z + zc };
+		target = (style == SH_OVERSHOULDER) ? Vec3{ victim.x, victim.y, victim.z + zt } : Vec3{ pp.x, pp.y, pp.z + zt };
+	}
+
+	// Cut to the shooter in one of several styles (3/4 front, gun pointed at the camera, low hero, over the shoulder...).
 	bool StartPlayerPhase(int player)
 	{
 		Vec3 pp;
 		Coords(player, pp.x, pp.y, pp.z);
-		float h = 0;
-		Native(N_GET_CHAR_HEADING, player, &h);
-		const float hr = h * 0.0174533f;
-		const float fx = -sinf(hr), fy = cosf(hr); // direction the shooter faces
-		const Vec3 target = { pp.x, pp.y, pp.z + 0.45f };
+		// Aim direction: towards the victim (the heading is held, so it matches the shooter's stance).
+		float ax = active.victim.x - pp.x, ay = active.victim.y - pp.y;
+		float al = sqrtf(ax * ax + ay * ay);
+		if (al < 0.5f)
+		{
+			float h = 0;
+			Native(N_GET_CHAR_HEADING, player, &h);
+			ax = -sinf(h * 0.0174533f); ay = cosf(h * 0.0174533f); al = 1.0f;
+		}
+		ax /= al; ay /= al;
+
+		// Try the chosen style first, then fall back to the safe ones.
+		int order[SH_COUNT];
+		order[0] = PickWeighted(cfg.wShooter, SH_COUNT);
+		int n = 1;
+		for (int st : { SH_FRONT34, SH_PROFILE, SH_GUNPOINT }) if (st != order[0]) order[n++] = st;
+
 		const float sgn = Rand01() < 0.5f ? -1.0f : 1.0f;
-		for (float sideDeg : { 40.0f, 55.0f, 25.0f, 70.0f })
-			for (float sg : { sgn, -sgn })
-				for (float d : { RandRange(1.9f, 2.7f), 1.5f })
+		for (int oi = 0; oi < n; oi++)
+		{
+			const int style = order[oi];
+			for (float k : { 1.0f, 0.8f, 1.15f })
+				for (float sg : { sgn, -sgn })
 				{
-					float a = sg * sideDeg * 0.0174533f;
-					float cx = fx * cosf(a) - fy * sinf(a), cy = fx * sinf(a) + fy * cosf(a);
-					Vec3 c = { pp.x + cx * d, pp.y + cy * d, pp.z + 0.5f };
-					if (CameraSpotOk(c, target))
-					{
-						Native(N_SET_CAM_POS, active.cam, c.x, c.y, c.z);
-						Native(N_POINT_CAM_AT_COORD, active.cam, target.x, target.y, target.z);
-						active.phase = 2; active.follow = false; active.orbit = 0; active.dolly = 0;
-						Log("cinematic: cut to the shooter (side %.0fdeg, dist %.1f)", sg * sideDeg, d);
-						return true;
-					}
+					Vec3 cam, target;
+					float fov;
+					BuildShooterShot(style, sg, k, pp, ax, ay, active.victim, cam, target, fov);
+					if (!CameraSpotOk(cam, target)) continue;
+
+					Native(N_SET_CAM_POS, active.cam, cam.x, cam.y, cam.z);
+					Native(N_POINT_CAM_AT_COORD, active.cam, target.x, target.y, target.z);
+					Native(N_SET_CAM_FOV, active.cam, fov);
+					active.phase = 2; active.follow = false; active.orbit = 0; active.dolly = 0;
+					active.p2Start = NowSec();
+					active.p2Cam = cam; active.p2Target = target;
+					active.p2Dolly = (Rand01() * 100.0f < cfg.shooterPushIn) ? -RandRange(0.12f, 0.25f) : 0.0f;
+					Log("cinematic: shooter shot '%s' (fov %.0f, push-in %.0f%%)", shooterName[style], fov, -active.p2Dolly * 100.0f);
+					return true;
 				}
+		}
 		active.switchAt = 1e18; // no clear spot: stay on the victim
 		Log("cinematic: no clear spot on the shooter, staying on the victim");
 		return false;
@@ -995,7 +1054,22 @@ namespace
 		if (NBool(Native(N_IS_PAUSE_MENU_ACTIVE))) { StopKillCam("pause menu"); return; }
 
 		if (active.ultra && cfg.ultraShowPlayer && active.phase == 1 && now >= active.switchAt) StartPlayerPhase(player);
-		if (active.phase == 2) return; // fixed camera on the shooter
+		if (active.phase == 2)
+		{
+			// Shooter shot: fixed, or a slow push-in towards the target.
+			if (active.p2Dolly != 0.0f)
+			{
+				const double span = (active.startTime + active.duration) - active.p2Start;
+				float t = span > 0.0 ? (float)((now - active.p2Start) / span) : 1.0f;
+				if (t > 1.0f) t = 1.0f;
+				const float f = 1.0f + active.p2Dolly * t;
+				Native(N_SET_CAM_POS, active.cam,
+					active.p2Target.x + (active.p2Cam.x - active.p2Target.x) * f,
+					active.p2Target.y + (active.p2Cam.y - active.p2Target.y) * f,
+					active.p2Target.z + (active.p2Cam.z - active.p2Target.z) * f);
+			}
+			return;
+		}
 
 		if (active.follow)
 		{

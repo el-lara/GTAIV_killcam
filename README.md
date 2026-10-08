@@ -57,7 +57,8 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
 - Not every qualifying kill triggers: `ArmNextKillChancePercent` (25) makes a kill only arm the next one, and the
   next qualifying kill within `ArmNextKillWindowSec` (8) triggers for sure.
 - Cinematic killcams (`CinematicChancePercent` 15, 50 when armed): time scale 0.03-0.07 for 3.2 s, the victim for
-  55% of it, then a cut to a 3/4 front view of the shooter. Unverified in-game.
+  55% of it, then a cut to the shooter in a random style: 3/4 front, gun pointed at the camera, low hero, over the shoulder,
+  profile, high angle or gun close-up (weights in the .ini), sometimes with a slow push-in. Unverified in-game.
 - Kills refill the Dead Eye meter by `KillRefill` (default 5%); headshot kills refill `HeadshotRefill` (15%) instead.
 - NPCs in cars/bikes qualify too (`VehicleKills`): camera always in front of the vehicle, looking back at the
   victim and following the vehicle (heading is smoothed). No other angles; if the front spot is blocked, skipped.
