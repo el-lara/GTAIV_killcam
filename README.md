@@ -58,7 +58,7 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
   next qualifying kill within `ArmNextKillWindowSec` (8) triggers for sure.
 - Cinematic killcams (`CinematicChancePercent` 15, 50 when armed): time scale 0.03-0.07 for 3.2 s, the victim for
   55% of it, then a cut to the shooter in a random style: 3/4 front, gun pointed at the camera, low hero, over the shoulder,
-  profile, high angle or gun close-up (weights in the .ini), sometimes with a slow push-in. Unverified in-game.
+  profile, high angle or head close-up (weights in the .ini), sometimes with a slow push-in. Unverified in-game.
 - Kills refill the Dead Eye meter by `KillRefill` (default 7.5%); headshot kills refill `HeadshotRefill` (20%) instead. While Dead Eye is active: `KillRefillWhileActive` 4%,
   `HeadshotRefillWhileActive` 15%. Killcam chances are multiplied by `KillcamChanceMultiplier` (0.7) while Dead Eye is active. Kills while Dead Eye is active also restore health
   (`HealthOnKillWhileActive` 8 points, `HealthOnHeadshotWhileActive` 25; scale unverified, see the log).
@@ -99,7 +99,10 @@ slowed, are unknown. `PlayerSpeedMethod=2` tries the move-speed multiplier inste
 Not compiled or run: the authoring environment has no Windows/MSVC. `dllmain.cpp` was only
 syntax-checked against stubs. Nothing was tested in-game.
 
-1. **Line of sight is weak by default.** I have no verified 1.2.0.59 address/pattern for
+1. **Line of sight is approximate by default.** Without a raycast the camera spot is checked with natives: a
+   top-surface probe along the line (`ProbeWalls`: walls/buildings/roofs) and `GET_CLOSEST_CAR` (`ProbeCars`:
+   vehicles). This is crude: it also rejects spots inside or under buildings. The text below is the older description.
+   **Line of sight was weak by default.** I have no verified 1.2.0.59 address/pattern for
    `CWorld::ProcessLineOfSight` (only 1.0.7/1.0.8 addresses exist publicly). Without it the
    check only probes ground height along the ray (`GET_GROUND_Z_FOR_3D_COORD`), so it detects
    terrain/floors but **not walls**. If you locate the function, put a unique byte pattern of its

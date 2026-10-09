@@ -40,7 +40,7 @@ namespace
 		float explosionKillChance = 4.0f; // % chance that an explosion kill gets a (wide, distant) killcam
 		float expDistMin = 7.0f, expDistMax = 12.0f;
 		float headshotRefill = 0.20f;  // Dead Eye energy (fraction of a full meter) restored per headshot kill
-		float killRefill = 0.075f;     // ... and per any other kill you make
+		float killRefill = 0.10f;      // ... and per any other kill you make
 		float healthKillActive = 8.0f;      // health points restored per kill while Dead Eye is active (0 = off)
 		float healthHeadshotActive = 25.0f; // ... and per headshot kill
 		float headshotRefillActive = 0.15f;  // same as headshotRefill but while Dead Eye is active
@@ -59,7 +59,13 @@ namespace
 		bool  ultraShowPlayer = true;
 		// Shooter shot styles (relative weights): 3/4 front, gun pointed at the camera, low hero, over the shoulder, profile, high, gun close-up
 		float wShooter[7] = { 25, 25, 15, 15, 10, 5, 5 };
-		float shooterPushIn = 40.0f;   // % of shooter shots that slowly push in
+		float shooterPushIn = 40.0f;
+		float shooterDistScale = 1.5f;  // shooter shots are filmed this many times farther than their base distance
+		float shooterHeadBelow = 2.4f;  // closer than this (m) the shooter shot looks at the head
+		float shooterTsMul = 0.5f;      // time scale multiplier for the shooter part of a cinematic killcam
+		bool  probeWalls = true;        // fallback line of sight: look for walls/buildings/roofs between camera and target
+		bool  probeCars = true;         // ... and for vehicles
+		float probeHeight = 25.0f;      // height above the ray from where the 'top surface' probe starts   // % of shooter shots that slowly push in
 		float kcPlayerSpeed = 0.5f;    // player animation speed multiplier during the killcam and its slow tail (1 = off)
 		bool  lockAim = true;          // keep your aim from changing while the killcam plays
 		int   lockAimMethod = 1;       // bit 1 = SET_GAME_CAMERA_CONTROLS_ACTIVE, bit 2 = SET_PLAYER_CONTROL
@@ -93,7 +99,7 @@ namespace
 		float deActivationCost = 0.05f; // fraction of a full meter spent each time Dead Eye is switched on
 		float deMaxSec = 10.0f;        // seconds of Dead Eye on a full meter
 		float deRechargeDelaySec = 1.0f; // after releasing, wait this long before recharging
-		float deRechargeSec = 20.0f;   // seconds to refill an empty meter
+		float deRechargeSec = 60.0f;   // seconds to refill an empty meter
 		float deMinToStart = 0.20f;    // after running dry, the meter must refill to this fraction to start again
 		bool  deHud = true;
 		bool  deHudAlways = false;     // false = only show while using or recharging
@@ -174,6 +180,16 @@ namespace
 			                              "ShooterWeightProfile", "ShooterWeightHigh", "ShooterWeightGunCloseUp" };
 			for (int k = 0; k < 7; k++) cfg.wShooter[k] = IniFloat(keys[k], cfg.wShooter[k]);
 			cfg.shooterPushIn = IniFloat("ShooterPushInChancePercent", cfg.shooterPushIn);
+			cfg.shooterDistScale = IniFloat("ShooterDistanceScale", cfg.shooterDistScale);
+			cfg.shooterHeadBelow = IniFloat("ShooterHeadFocusBelow", cfg.shooterHeadBelow);
+			cfg.shooterTsMul = IniFloat("ShooterTimeScaleMultiplier", cfg.shooterTsMul);
+			cfg.probeWalls = IniBool("ProbeWalls", cfg.probeWalls);
+			cfg.probeCars = IniBool("ProbeCars", cfg.probeCars);
+			cfg.probeHeight = IniFloat("ProbeHeight", cfg.probeHeight);
+			if (cfg.shooterDistScale < 0.5f) cfg.shooterDistScale = 0.5f;
+			if (cfg.shooterTsMul < 0.1f) cfg.shooterTsMul = 0.1f;
+			if (cfg.shooterTsMul > 1.0f) cfg.shooterTsMul = 1.0f;
+			if (cfg.probeHeight < 3.0f) cfg.probeHeight = 3.0f;
 			if (cfg.shooterPushIn < 0.0f) cfg.shooterPushIn = 0.0f;
 			if (cfg.shooterPushIn > 100.0f) cfg.shooterPushIn = 100.0f;
 		}
@@ -541,6 +557,7 @@ namespace
 		N_HAS_CHAR_BEEN_DAMAGED_BY_WEAPON = 0x6DB26E07,
 		N_SET_GAME_CAMERA_CONTROLS_ACTIVE = 0x57952546,
 		N_SET_CHAR_HEALTH = 0x575E2880,
+		N_GET_CLOSEST_CAR = 0x2CB303F8,
 		N_GET_PLAYER_MAX_HEALTH = 0x52F27084,
 		N_SET_GAME_CAM_HEADING = 0x45FB5CE1,
 		N_GET_GAME_CAM = 0x0B2A2801,
@@ -621,6 +638,13 @@ namespace
 	}
 
 	// true = path clear
+	int ignoreCar = 0; // vehicle of the victim (vehicle killcams): never counts as an obstacle
+	bool CarNear(float x, float y, float z, float r)
+	{
+		int v = (int)Native(N_GET_CLOSEST_CAR, x, y, z, r, false, 70u);
+		return v != 0 && v != ignoreCar;
+	}
+
 	bool ClearLine(const Vec3& a, const Vec3& b)
 	{
 		if (processLos)
@@ -630,21 +654,32 @@ namespace
 			uint8_t results[0x60] = {};
 			return processLos(&from, &to, &unk, results, cfg.raycastFlags, 1, 0, 2, 4) == 0;
 		}
-		// Fallback: sample the segment; a solid surface within 0.5 m above a sample point and
-		// higher than the ray means terrain/floor/roof blocks it. Cannot see walls.
-		const int steps = 8;
-		for (int i = 1; i < steps; i++)
+		// Fallback without a raycast: sample the segment and probe the world with natives.
+		//  - walls/buildings/roofs: GET_GROUND_Z_FOR_3D_COORD from far above returns the top surface at that
+		//    x,y; if it is higher than the ray there, something solid stands in the way.
+		//  - vehicles: GET_CLOSEST_CAR around some of the samples.
+		const float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+		const float len = sqrtf(dx * dx + dy * dy + dz * dz);
+		int steps = (int)(len / 0.7f);
+		if (steps < 6) steps = 6;
+		if (steps > 24) steps = 24;
+		for (int i = 0; i < steps; i++)
 		{
-			float t = (float)i / steps;
-			float x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t, z = a.z + (b.z - a.z) * t;
-			float gz = -1000.0f;
-			Native(N_GET_GROUND_Z_FOR_3D_COORD, x, y, z + 0.5f, &gz);
-			if (gz > z - 0.1f && gz < z + 0.6f) return false;
+			const float t = (float)i / steps;
+			const float x = a.x + dx * t, y = a.y + dy * t, z = a.z + dz * t;
+			const float rem = len * (1.0f - t); // distance left to the target
+			if (rem < 1.0f) break;              // the subject may stand against a wall
+			if (cfg.probeWalls)
+			{
+				float gz = -1000.0f;
+				Native(N_GET_GROUND_Z_FOR_3D_COORD, x, y, z + cfg.probeHeight, &gz);
+				if (gz > z - 0.25f && gz < z + cfg.probeHeight - 0.5f) return false;
+			}
+			if (cfg.probeCars && rem > 2.5f && (i % 3) == 0 && CarNear(x, y, z, 2.4f)) return false;
 		}
 		return true;
 	}
 
-	// Camera spot must see the target and not sit inside geometry.
 	bool CameraSpotOk(const Vec3& cam, const Vec3& target)
 	{
 		if (!ClearLine(cam, target)) return false;
@@ -658,8 +693,9 @@ namespace
 		else
 		{
 			float gz = -1000.0f;
-			Native(N_GET_GROUND_Z_FOR_3D_COORD, cam.x, cam.y, cam.z + 0.5f, &gz);
-			if (cam.z - gz < 0.4f) return false; // camera on/below the ground
+			Native(N_GET_GROUND_Z_FOR_3D_COORD, cam.x, cam.y, cam.z + (cfg.probeWalls ? cfg.probeHeight : 0.5f), &gz);
+			if (cam.z - gz < 0.4f) return false; // camera on/below the ground, or inside/under something solid
+			if (cfg.probeCars && CarNear(cam.x, cam.y, cam.z, 2.0f)) return false;
 		}
 		return true;
 	}
@@ -771,7 +807,7 @@ namespace
 			Log("aim lock released: player control on = %d", (int)NBool(Native(N_IS_PLAYER_CONTROL_ON, pid)));
 			active.ctrlLocked = false;
 		}
-		active.on = false; active.follow = false;
+		active.on = false; active.follow = false; ignoreCar = 0;
 		Log("killcam end (%s), %.2fs real", why, NowSec() - active.startTime);
 	}
 
@@ -881,9 +917,10 @@ namespace
 	bool StartVehicleKillCam(int ped, int car, const Vec3& v)
 	{
 		Vec3 cp;
+		ignoreCar = car; // the victim's own vehicle is not an obstacle
 		Native(N_GET_CAR_COORDINATES, car, &cp.x, &cp.y, &cp.z);
 		float fx = 0, fy = 0;
-		if (!VehicleForward(car, fx, fy)) { Log("skipped: vehicle forward vector invalid"); return false; }
+		if (!VehicleForward(car, fx, fy)) { Log("skipped: vehicle forward vector invalid"); ignoreCar = 0; return false; }
 
 		active.victim = v;
 		active.height = RandRange(cfg.vehHeightMin, cfg.vehHeightMax);
@@ -901,7 +938,7 @@ namespace
 
 		const float ts = PickTimeScale();
 		if (!BeginCam(p, target, ts)) return false;
-		active.follow = true; active.car = car; active.ped = ped;
+		active.follow = true; active.car = car; active.ped = ped; ignoreCar = car;
 		active.fwdX = fx; active.fwdY = fy; active.dist = dist;
 		active.orbit = 0; active.dolly = 0;
 		Log("killcam start%s: vehicle-front timescale %.2f height %.1f dist %.1f victim (%.1f %.1f %.1f)", pendingUltra ? " [CINEMATIC]" : "", ts, active.height, dist, v.x, v.y, v.z);
@@ -939,6 +976,7 @@ namespace
 
 	bool StartKillCam(const Vec3& v, bool wide = false)
 	{
+		ignoreCar = 0;
 		active.victim = v;
 
 		// Random shot: movement (mostly fixed) x camera angle.
@@ -991,7 +1029,7 @@ namespace
 
 	// ---- Shooter shot ("cinematic" second half): several styles, chosen at random.
 	enum { SH_FRONT34, SH_GUNPOINT, SH_LOWHERO, SH_OVERSHOULDER, SH_PROFILE, SH_HIGH, SH_CLOSEUP, SH_COUNT };
-	const char* shooterName[SH_COUNT] = { "3/4 front", "gun pointed at camera", "low hero", "over the shoulder", "profile", "high angle", "gun close-up" };
+	const char* shooterName[SH_COUNT] = { "3/4 front", "gun pointed at camera", "low hero", "over the shoulder", "profile", "high angle", "head close-up" };
 
 	// a = unit vector (x, y) the shooter aims along (towards the victim); returns a camera/target/fov for the style.
 	void BuildShooterShot(int style, float sg, float k, const Vec3& pp, float ax, float ay, const Vec3& victim,
@@ -1007,10 +1045,13 @@ namespace
 		case SH_OVERSHOULDER: ang = 3.14159f + sg * RandRange(15, 35) * D; d = RandRange(1.1f, 1.7f); zc = 0.75f; zt = 0.3f; fov = RandRange(45, 60); break;
 		case SH_PROFILE:      ang = sg * RandRange(80, 100) * D; d = RandRange(1.5f, 2.2f); zc = 0.5f; zt = 0.5f; fov = RandRange(35, 45); break;
 		case SH_HIGH:         ang = sg * RandRange(20, 70) * D; d = RandRange(2.4f, 3.4f); zc = RandRange(2.0f, 3.0f); zt = 0.2f; fov = RandRange(40, 50); break;
-		case SH_CLOSEUP:      ang = sg * RandRange(20, 45) * D; d = RandRange(0.9f, 1.3f); zc = 0.25f; zt = 0.25f; fov = RandRange(30, 38); break;
+		case SH_CLOSEUP:      ang = sg * RandRange(20, 45) * D; d = RandRange(1.3f, 1.8f); zc = 0.45f; zt = 0.65f; fov = RandRange(30, 38); break;
 		default:              ang = sg * RandRange(30, 55) * D; d = RandRange(1.9f, 2.7f); zc = 0.5f; zt = 0.45f; break;
 		}
+		if (style != SH_OVERSHOULDER && style != SH_CLOSEUP) d *= cfg.shooterDistScale; // usually filmed from farther away
 		d *= k;
+		if (style == SH_CLOSEUP) { d = RandRange(1.3f, 1.8f) * k; zt = 0.65f; }  // close-up on the head
+		else if (d < cfg.shooterHeadBelow && style != SH_OVERSHOULDER) zt = 0.65f; // close: look at the head
 		const float cx = ax * cosf(ang) - ay * sinf(ang), cy = ax * sinf(ang) + ay * cosf(ang);
 		cam = { pp.x + cx * d, pp.y + cy * d, pp.z + zc };
 		target = (style == SH_OVERSHOULDER) ? Vec3{ victim.x, victim.y, victim.z + zt } : Vec3{ pp.x, pp.y, pp.z + zt };
@@ -1057,7 +1098,9 @@ namespace
 					active.p2Start = NowSec();
 					active.p2Cam = cam; active.p2Target = target;
 					active.p2Dolly = (Rand01() * 100.0f < cfg.shooterPushIn) ? -RandRange(0.12f, 0.25f) : 0.0f;
-					Log("cinematic: shooter shot '%s' (fov %.0f, push-in %.0f%%)", shooterName[style], fov, -active.p2Dolly * 100.0f);
+					const float ts2 = fmaxf(0.02f, active.ts * cfg.shooterTsMul);
+					Native(N_SET_TIME_SCALE, ts2); // even slower than the victim part
+					Log("cinematic: shooter shot '%s' (fov %.0f, push-in %.0f%%, timescale %.3f)", shooterName[style], fov, -active.p2Dolly * 100.0f, ts2);
 					return true;
 				}
 		}
