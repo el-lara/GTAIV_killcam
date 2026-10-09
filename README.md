@@ -62,8 +62,9 @@ Log: `GTAIV_KillCam.log` next to the `.asi`.
 - Kills refill the Dead Eye meter by `KillRefill` (default 7.5%); headshot kills refill `HeadshotRefill` (20%) instead. While Dead Eye is active: `KillRefillWhileActive` 4%,
   `HeadshotRefillWhileActive` 15%. Killcam chances are multiplied by `KillcamChanceMultiplier` (0.7) while Dead Eye is active. Kills while Dead Eye is active also restore health
   (`HealthOnKillWhileActive` 8 points, `HealthOnHeadshotWhileActive` 25; scale unverified, see the log).
-- NPCs in cars/bikes qualify too (`VehicleKills`): camera always in front of the vehicle, looking back at the
-  victim and following the vehicle (heading is smoothed). No other angles; if the front spot is blocked, skipped.
+- NPCs in cars/bikes qualify too (`VehicleKills`): camera mostly in front of the vehicle (`VehicleFrontPercent` 70), otherwise from an angle of 25-70 degrees,
+  sometimes orbiting slowly (`VehicleOrbitChancePercent` 25); it follows the vehicle (heading is smoothed). A blocked angle
+  falls back to straight ahead; if that is blocked too, skipped.
   Not tested in-game: whether `GET_CAR_CHAR_IS_USING` works for a dead ped is unverified (the log says if not).
 - Needs (headshot or one shot) + not on cooldown + chance roll + victim within range.
 - Each killcam picks a random shot: movement (fixed 60 / orbit 30 / dolly 10, random orbit

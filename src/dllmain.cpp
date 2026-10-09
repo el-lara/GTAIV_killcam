@@ -75,7 +75,10 @@ namespace
 		float sniperMaxDist = 250.0f;  // max victim distance for sniper kills
 		bool  vehicleKills = true;     // allow killcams for NPCs in cars/bikes (always from the front)
 		float vehDistMin = 4.0f, vehDistMax = 6.5f;   // meters ahead of the vehicle
-		float vehHeightMin = 0.8f, vehHeightMax = 2.0f; // camera height above the vehicle position
+		float vehHeightMin = 0.8f, vehHeightMax = 2.0f;
+		float vehFrontPercent = 70.0f;  // % of vehicle killcams filmed from (almost) straight ahead; the rest from an angle
+		float vehOrbitChance = 25.0f;   // % of vehicle killcams that also orbit a little
+		float vehOrbitMin = 4.0f, vehOrbitMax = 12.0f; // deg/s // camera height above the vehicle position
 		// Shot variation (picked at random for every killcam)
 		bool  varyTimeScale = true;
 		float timeScaleMin = 0.10f, timeScaleMax = 0.40f;
@@ -223,6 +226,15 @@ namespace
 		cfg.explosionKillChance = IniFloat("ExplosionKillChancePercent", cfg.explosionKillChance);
 		cfg.expDistMin = IniFloat("ExplosionDistMin", cfg.expDistMin);
 		cfg.expDistMax = IniFloat("ExplosionDistMax", cfg.expDistMax);
+		cfg.vehFrontPercent = IniFloat("VehicleFrontPercent", cfg.vehFrontPercent);
+		cfg.vehOrbitChance = IniFloat("VehicleOrbitChancePercent", cfg.vehOrbitChance);
+		cfg.vehOrbitMin = IniFloat("VehicleOrbitSpeedMin", cfg.vehOrbitMin);
+		cfg.vehOrbitMax = IniFloat("VehicleOrbitSpeedMax", cfg.vehOrbitMax);
+		if (cfg.vehFrontPercent < 0.0f) cfg.vehFrontPercent = 0.0f;
+		if (cfg.vehFrontPercent > 100.0f) cfg.vehFrontPercent = 100.0f;
+		if (cfg.vehOrbitChance < 0.0f) cfg.vehOrbitChance = 0.0f;
+		if (cfg.vehOrbitChance > 100.0f) cfg.vehOrbitChance = 100.0f;
+		if (cfg.vehOrbitMax < cfg.vehOrbitMin) cfg.vehOrbitMax = cfg.vehOrbitMin;
 		cfg.vehDistMin = IniFloat("VehicleDistMin", cfg.vehDistMin);
 		cfg.vehDistMax = IniFloat("VehicleDistMax", cfg.vehDistMax);
 		cfg.vehHeightMin = IniFloat("VehicleHeightMin", cfg.vehHeightMin);
@@ -753,6 +765,8 @@ namespace
 		int    car = 0, ped = 0;
 		float  fwdX = 0, fwdY = 1;  // smoothed forward direction of the vehicle
 		float  dist = 5.0f;
+		float  vAng = 0.0f;         // angle of the camera from straight ahead of the vehicle (rad)
+		float  vOrbit = 0.0f;       // slow orbit around the vehicle (rad/s), usually 0
 	} active;
 	double lastTrigger = -1e9;
 
@@ -927,21 +941,33 @@ namespace
 		active.targetH = 0.3f;
 		const Vec3 target = { v.x, v.y, v.z + active.targetH };
 		const float d0 = RandRange(cfg.vehDistMin, cfg.vehDistMax);
-		float dist = 0;
+		// Mostly straight ahead of the vehicle; sometimes from an angle; a blocked angle falls back to straight ahead.
+		const float DEG = 0.0174533f;
+		const float sgn = Rand01() < 0.5f ? -1.0f : 1.0f;
+		const bool front = Rand01() * 100.0f < cfg.vehFrontPercent;
+		const float offs = front ? sgn * RandRange(0.0f, 10.0f) * DEG : sgn * RandRange(25.0f, 70.0f) * DEG;
+		float dist = 0, usedAng = 0;
 		Vec3 p = {};
-		for (float k : { 1.0f, 0.75f, 0.55f })
+		for (float ang : { offs, 0.0f })
 		{
-			Vec3 c = { cp.x + fx * d0 * k, cp.y + fy * d0 * k, cp.z + active.height };
-			if (CameraSpotOk(c, target)) { p = c; dist = d0 * k; break; }
+			const float ux = fx * cosf(ang) - fy * sinf(ang), uy = fx * sinf(ang) + fy * cosf(ang);
+			for (float k : { 1.0f, 0.75f, 0.55f })
+			{
+				Vec3 c = { cp.x + ux * d0 * k, cp.y + uy * d0 * k, cp.z + active.height };
+				if (CameraSpotOk(c, target)) { p = c; dist = d0 * k; usedAng = ang; break; }
+			}
+			if (dist != 0) break;
 		}
-		if (dist == 0) { Log("skipped: no clear spot in front of the vehicle"); return false; }
+		if (dist == 0) { Log("skipped: no clear spot around the vehicle"); ignoreCar = 0; return false; }
 
 		const float ts = PickTimeScale();
 		if (!BeginCam(p, target, ts)) return false;
 		active.follow = true; active.car = car; active.ped = ped; ignoreCar = car;
 		active.fwdX = fx; active.fwdY = fy; active.dist = dist;
 		active.orbit = 0; active.dolly = 0;
-		Log("killcam start%s: vehicle-front timescale %.2f height %.1f dist %.1f victim (%.1f %.1f %.1f)", pendingUltra ? " [CINEMATIC]" : "", ts, active.height, dist, v.x, v.y, v.z);
+		active.vAng = usedAng;
+		active.vOrbit = (Rand01() * 100.0f < cfg.vehOrbitChance) ? (Rand01() < 0.5f ? -1.0f : 1.0f) * RandRange(cfg.vehOrbitMin, cfg.vehOrbitMax) * DEG : 0.0f;
+		Log("killcam start%s: vehicle (%.0fdeg off the front, orbit %.0fdeg/s) timescale %.2f height %.1f dist %.1f victim (%.1f %.1f %.1f)", pendingUltra ? " [CINEMATIC]" : "", usedAng / DEG, active.vOrbit / DEG, ts, active.height, dist, v.x, v.y, v.z);
 		return true;
 	}
 
@@ -962,14 +988,23 @@ namespace
 		Vec3 t = cp;
 		if (NBool(Native(N_DOES_CHAR_EXIST, active.ped))) Native(N_GET_CHAR_COORDINATES, active.ped, &t.x, &t.y, &t.z);
 		t.z += active.targetH;
-		for (float k : { 1.0f, 0.7f, 0.5f })
+		const float na = active.vAng + active.vOrbit * dt; // slow orbit, if any
+		for (float ang : { na, active.vAng })
 		{
-			Vec3 c = { cp.x + active.fwdX * active.dist * k, cp.y + active.fwdY * active.dist * k, cp.z + active.height };
-			if (CameraSpotOk(c, t))
+			const float ux = active.fwdX * cosf(ang) - active.fwdY * sinf(ang), uy = active.fwdX * sinf(ang) + active.fwdY * cosf(ang);
+			bool moved = false;
+			for (float k : { 1.0f, 0.7f, 0.5f })
 			{
-				Native(N_SET_CAM_POS, active.cam, c.x, c.y, c.z);
-				break;
+				Vec3 c = { cp.x + ux * active.dist * k, cp.y + uy * active.dist * k, cp.z + active.height };
+				if (CameraSpotOk(c, t))
+				{
+					Native(N_SET_CAM_POS, active.cam, c.x, c.y, c.z);
+					active.vAng = ang;
+					moved = true;
+					break;
+				}
 			}
+			if (moved) break;
 		}
 		Native(N_POINT_CAM_AT_COORD, active.cam, t.x, t.y, t.z);
 	}
