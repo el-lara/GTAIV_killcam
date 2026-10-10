@@ -1,5 +1,7 @@
 # GTAIV KillCam
 
+[![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/ellara) Free mod. Donations are voluntary and optional.
+
 ## Download
 
 **[⬇ Download GTAIV_KillCam.zip (latest build)](https://github.com/el-lara/GTAIV_killcam/releases/latest/download/GTAIV_KillCam.zip)**
