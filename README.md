@@ -1,5 +1,17 @@
 # GTAIV KillCam
 
+## Descarga / Download
+
+**[⬇ Descargar GTAIV_KillCam.zip (última versión)](https://github.com/el-lara/GTAIV_killcam/releases/latest/download/GTAIV_KillCam.zip)**
+· [Página de releases](https://github.com/el-lara/GTAIV_killcam/releases/tag/latest)
+
+1. Descomprime el zip: contiene `plugins\GTAIV_KillCam.asi` y `plugins\GTAIV_KillCam.ini`.
+2. Copia la carpeta `plugins` dentro de `Grand Theft Auto IV\GTAIV\` (necesitas Ultimate ASI Loader).
+3. Windows: clic derecho al `.asi` → Propiedades → Desbloquear (y si Smart App Control lo bloquea, reintenta o desactívalo).
+4. Teclas: Dead Eye = Alt izquierdo (mantener). Configuración en `GTAIV_KillCam.ini`, log en `GTAIV_KillCam.log`.
+
+Solo GTA IV Complete Edition **1.2.0.59**, 32-bit.
+
 `.asi` for **GTA IV Complete Edition 1.2.0.59** (x86, Ultimate ASI Loader, `plugins\` folder).
 When the player kills an on-foot NPC with a headshot or a single shot, a scripted camera orbits
 the victim with `SET_TIME_SCALE 0.25` for 2 s, then the camera and time scale are restored.

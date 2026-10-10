@@ -4,6 +4,9 @@ on:
     branches: [ "claude/upbeat-shannon-oydhha" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -23,3 +26,14 @@ jobs:
           name: GTAIV_KillCam
           path: dist/
           if-no-files-found: error
+      - name: Zip release
+        shell: pwsh
+        run: Compress-Archive -Path dist/plugins -DestinationPath GTAIV_KillCam.zip -Force
+      - name: Publish release (latest)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>$null
+          $global:LASTEXITCODE = 0
+          gh release create latest GTAIV_KillCam.zip --title "GTAIV KillCam (latest build)" --target ${{ github.sha }} --notes "Extract into the game folder (GTAIV/plugins/GTAIV_KillCam.asi + .ini). Requires GTA IV Complete Edition 1.2.0.59 and an ASI loader. Built from ${{ github.sha }}."
